@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
+import itertools
 
 class SurrogateModel:
     """
@@ -19,10 +20,22 @@ class SurrogateModel:
     of parameters
 
     Attributes:
-        N : `int`
-            The number of particles in the system
-        pauli_strings: `list[str]`
-            A list of Pauli strings that comprise the Hamiltonian
+    -----------
+    _SPARSE_LIMIT : `int`
+        The highest N  that can be used before sparse matrices are used
+    model_name : `str`
+        The name to use for the model when saving files
+    N : `int`
+        The number of particles in the system
+    pauli_strings: `list[str]`
+        A list of Pauli strings that comprise the Hamiltonian
+    H_terms : `list[np.ndarray]`
+        A list of each term (as a matrix) in the Hamiltonian
+    H2_terms : `list[np.ndarray]`
+        A list of each term (as a matrix) in the square of the Hamiltonian
+    H_fulls : `list[np.ndarray]`
+        A list of the Hamiltonians for each training grid parameter in the
+        full Hilbert space
     """
 
     _SPARSE_LIMIT: int
@@ -53,9 +66,17 @@ class SurrogateModel:
         training_grid: list[list[complex]],
         particle_selection: tuple[int, int] | int = None,
         basis_ordering: str = "uudd",
-        log: bool = True
+        log: bool = False
     ):
-        self._SPARSE_LIMIT = 8
+        """
+        Contructs the surrogate model for a given Hamiltonian
+
+        Parameters:
+        -----------
+        model_name : `str`
+            the name of the model to use when saving files
+        """
+        self._SPARSE_LIMIT = 1000
 
         self.model_name = model_name
 
@@ -69,14 +90,14 @@ class SurrogateModel:
         self.H_terms = None
         self.H2_terms = None
         self.H_fulls = None
-        self.training_grid = np.array(training_grid, dtype=complex)
+        self.training_grid = np.array(training_grid, dtype=dict)
         self.training_grid2 = None
         self.opt_basis = None
         self.overlap = None
         self.reduced_terms = None
         self.particle_selection = particle_selection
         self.basis_ordering = basis_ordering
-        self.log = True
+        self.log = log
 
         if type(self.particle_selection) == type(None):
             self.size = 2**N
@@ -97,10 +118,10 @@ class SurrogateModel:
         if self.log:
             if not os.path.isdir(self.save_folder):
                 os.mkdir(self.save_folder)
-            self.training_grid.tofile(
-                (self.save_folder + "/" + "training_grid_"
-                 + datetime.now().isoformat() + ".bin").replace(":", ".")
-            )
+            #self.training_grid.tofile(
+            #    (self.save_folder + "/" + "training_grid_"
+            #     + datetime.now().isoformat() + ".bin").replace(":", ".")
+            #)
         
         self._append_to_log(f"Model initialized with: {self.pauli_strings}")
 
@@ -121,7 +142,7 @@ class SurrogateModel:
         log=False
     ):
         start_time = time.perf_counter()
-        self.H_terms = []
+        self.H_terms = {}
         for pauli_string in self.pauli_strings:
             if save:
                 if pauli_string == "":
@@ -148,27 +169,29 @@ class SurrogateModel:
                     np.astype(self.H_terms[-1], float).tofile(filename)
 
             else:
-                self.H_terms.append(
-                    gen_from_pauli_string(
-                        self.N,
-                        pauli_string,
-                        self.particle_selection,
-                        ordering=self.basis_ordering,
-                        sparse=self.sparse
-                    ),
+                self.H_terms[pauli_string] = gen_from_pauli_string(
+                    self.N,
+                    pauli_string,
+                    self.particle_selection,
+                    ordering=self.basis_ordering,
+                    sparse=self.sparse
                 )
 
-        self.H2_terms = []
-        for h_i in self.H_terms:
-            for h_j in self.H_terms:
-                self.H2_terms.append(h_i @ h_j)
+        self.H2_terms = {}
+        for h_i in self.H_terms.keys():
+            for h_j in self.H_terms.keys():
+                self.H2_terms[h_i + " * " + h_j] = (
+                    self.H_terms[h_i] @ self.H_terms[h_j]
+                )
 
         self.training_grid2 = []
         for mu in self.training_grid:
-            bulk = []
-            for mu_i in mu:
-                for mu_j in mu:
-                    bulk.append(mu_i * mu_j)
+            bulk = {}
+            for mu_i in mu.keys():
+                for mu_j in mu.keys():
+                    bulk[mu_i  + " * " +  mu_j] = (
+                        mu[mu_i] * mu[mu_j]
+                    )
             self.training_grid2.append(bulk)
 
         if pregenerate_fulls:
@@ -187,10 +210,36 @@ class SurrogateModel:
         parameter_idx: int
     ) -> np.ndarray:
         H_full = np.zeros((self.size, self.size), dtype=complex)
-        for p, h in zip(self.training_grid[parameter_idx], self.H_terms):
-            H_full += p * h
+        for pauli in self.pauli_strings:
+            H_full += (
+                self.training_grid[parameter_idx][pauli] * self.H_terms[pauli]
+            )
 
         return H_full
+
+    def _calculate_residue2_batch(
+        self,
+        js: int,
+        basis: np.ndarray = None,
+        overlap: np.ndarray = None,
+        Hr_terms: list[np.ndarray] = None,
+        H2r_terms: list[np.ndarray] = None,
+        degeneracy_truncation: float = None,
+    ):
+        residues = []
+        for j in js:
+            residues.append(
+                self._calculate_residue2(
+                    j,
+                    basis,
+                    overlap,
+                    Hr_terms,
+                    H2r_terms,
+                    degeneracy_truncation
+                )
+            )
+
+        return residues
 
     def _calculate_residue2(
         self,
@@ -202,11 +251,15 @@ class SurrogateModel:
         degeneracy_truncation: float = None
     ):
         Hr = np.zeros((basis.shape[1], basis.shape[1]), dtype=complex)
-        for p, hr in zip(self.training_grid[j], Hr_terms):
-            Hr += p * hr
+        for pauli in Hr_terms.keys():
+            Hr += self.training_grid[j][pauli] * Hr_terms[pauli]
+        """
         H2r = np.zeros((basis.shape[1], basis.shape[1]), dtype=complex)
         for p2, h2r in zip(self.training_grid2[j], H2r_terms):
             H2r += p2 * h2r
+        """
+        H_full = self._build_H_full(j)
+        H2r = basis.conj().T @ H_full @ H_full @ basis
 
         evals, evecs = sp.linalg.eigh(Hr, overlap)
 
@@ -312,13 +365,13 @@ class SurrogateModel:
             next_choice = None
             residues = []
             start_time_Hr = time.perf_counter()
-            Hr_terms = []
-            H2r_terms = []
+            Hr_terms = {}
+            H2r_terms = {}
 
-            for h in self.H_terms:
-                Hr_terms.append(basis.conj().T @ h @ basis)
-            for h2 in self.H2_terms:
-                    H2r_terms.append(basis.conj().T @ h2 @ basis)
+            for pauli in self.H_terms.keys():
+                Hr_terms[pauli] = basis.conj().T @ self.H_terms[pauli] @ basis
+            for pauli in self.H2_terms.keys():
+                H2r_terms[pauli] = basis.conj().T @ self.H2_terms[pauli] @ basis
             end_time_Hr = time.perf_counter()
             self._append_to_log(
                 f"Build Hr and H2r in {end_time_Hr - start_time_Hr} seconds"
@@ -336,17 +389,23 @@ class SurrogateModel:
                         degeneracy_truncation
                     ))
             else:
+                batch_size = int(len(not_chosen) / processes + 0.5)
+                not_chosen_batches = [
+                    not_chosen[j:j + batch_size]
+                    for j in range(0, len(not_chosen), batch_size)
+                ]
                 residues = list(ppe.map(
                     partial(
-                        self._calculate_residue2,
+                        self._calculate_residue2_batch,
                         basis=basis,
                         overlap=overlap,
                         Hr_terms=Hr_terms,
                         H2r_terms=H2r_terms,
                         degeneracy_truncation=degeneracy_truncation
                     ),
-                    not_chosen
+                    not_chosen_batches
                 ))
+                residues = list(itertools.chain.from_iterable(residues))
 
             max_res2 = np.max(residues)
             next_choice = not_chosen[np.argmax(residues)]
@@ -362,7 +421,6 @@ class SurrogateModel:
                 f"Max residual {max_res2} for param point {next_choice}"
             )
                 
-
             print("Max Residue", max_res2)
             print("Number of residues calculated:", len(residues))
 
@@ -425,7 +483,6 @@ class SurrogateModel:
 
             print("Degeneracy of chosen H_full ground state:", degeneracy)
             basis_addition = evecs[:, 0:degeneracy]
-
             # compress the basis
             projection = basis_addition - basis @ sp.linalg.solve(
                 overlap, basis.conj().T @ basis_addition
@@ -549,10 +606,10 @@ class SurrogateModel:
             self.optimize()
 
         if type(self.reduced_terms) == type(None):
-            self.reduced_terms = []
-            for h in self.H_terms:
-                self.reduced_terms.append(
-                    self.opt_basis.conj().T @ h @ self.opt_basis
+            self.reduced_terms = {}
+            for pauli in self.H_terms.keys():
+                self.reduced_terms[pauli] = (
+                    self.opt_basis.conj().T @ self.H_terms[pauli] @ self.opt_basis
                 )
 
         Hr = np.zeros(
@@ -560,8 +617,8 @@ class SurrogateModel:
             dtype=complex
         )
 
-        for p, h in zip(parameters, self.reduced_terms):
-            Hr += p * h
+        for pauli in self.reduced_terms.keys():
+            Hr += parameters[pauli] * self.reduced_terms[pauli]
 
         evals, evecs = sp.linalg.eigh(Hr, self.overlap)
 

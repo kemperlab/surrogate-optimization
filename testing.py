@@ -12,7 +12,7 @@ if __name__ == "__main__":
     svd_tol = 1e-8
 
     # Parameter grid values for training grid
-    mu = np.linspace(-3.0, 3.0, 20)
+    mu = np.linspace(-5.0, 5.0, 20)
 
     # Number of sites (total for TFIM/TFXY/Heisenberg, per spin for fermi_hubbard, AIM)
     N = 4
@@ -20,13 +20,11 @@ if __name__ == "__main__":
     # None or Between 0 and N (2*N for AIM, fermi_hubbard), N for
     # TFIM/TFXY/Heisenberg. Can be tuple for (n_up, n_down) for AIM,
     # fermi_hubbard
-    ps = (2, 2)
+    ps = None
 
     # AIM = Single Impurity Anderson Model, fermi_hubbard, TFIM, TFXY,
     # heisenberg
-    model_type = "AIM"
-
-    mu = np.linspace(-5, 5, 20)
+    model_type = "fermi_hubbard"
 
     if model_type == "TFIM":
         model_parameters = {
@@ -102,8 +100,8 @@ if __name__ == "__main__":
                 model_parameters["h"] = 0.1
             elif model_type == "fermi_hubbard":
                 model_parameters["t"] = m1
-                model_parameters["mu"] = m2
-                model_parameters["U"] = U
+                model_parameters["mu"] = 0.5
+                model_parameters["U"] = m2
             elif model_type == "AIM":
                 model_parameters["vb"] = np.array(
                     [0.01] * ((NB) % 2) + [m1] * (NB - (NB) % 2)
@@ -117,29 +115,17 @@ if __name__ == "__main__":
             model_paulis = model_to_paulis(N, model_type, model_parameters)
             params = np.zeros(len(H_paulis), dtype=tuple)
 
-            print(H_paulis_order)
             for t in model_paulis:
                 try:
                     params[H_paulis_order[t[0]]] = t[1]
-                    print(H_paulis_order[t[0]])
                 except:
                     raise Exception("Failed to generate all terms in model")
 
-            if model_type == "asdasdfasdf":
-                model_paulis = list(zip(H_paulis, params))
-                id_loc = np.where(
-                    np.array([t[0] for t in model_paulis]) == "")[0][0]
-                grid_point1 = [model_paulis[id_loc][1]]
-                grid_point = grid_point1 + [
-                    model_paulis[k][1]
-                    for k in range(len(model_paulis)) if k != id_loc
-                ]
-                training_grid.append(np.array(grid_point))
-                #training_grid.append(np.array(params))
-            else:
-                model_paulis = list(zip(H_paulis, params))
-                training_grid.append([t[1] for t in model_paulis])
-            #training_grid.append(params)
+            model_paulis = list(zip(H_paulis, params))
+            paulis_dict = {}
+            for t in model_paulis:
+                paulis_dict[t[0]] = t[1]
+            training_grid.append(paulis_dict)
 
     if model_type == "AIM" or model_type == "fermi_hubbard":
         surrogate_N = 2 * N
@@ -154,6 +140,7 @@ if __name__ == "__main__":
         training_grid,
         particle_selection=ps,
         basis_ordering=surrogate_ord,
+        log=False
     )
 
     model.build_terms()
@@ -163,10 +150,10 @@ if __name__ == "__main__":
     solution_grid = np.zeros((len(mu), len(mu)), dtype=complex)
     for i in range(len(mu)):
         for j in range(len(mu)):
-            H_full = np.zeros_like(model.H_terms[0], dtype=complex)
+            H_full = np.zeros((model.size, model.size), dtype=complex)
             parameters = training_grid[i * len(mu) + j]
-            for k, h in enumerate(model.H_terms):
-                H_full += parameters[k] * h
+            for pauli in model.H_terms.keys():
+                H_full += parameters[pauli] * model.H_terms[pauli]
             if model.sparse:
                 evals, evecs = sps.linalg.eigsh(H_full.real)
             else:
@@ -184,11 +171,21 @@ if __name__ == "__main__":
     )
     print("Basis Size", basis.shape[1])
 
+    for i in range(basis.shape[1]):
+        bv = basis[:, i]
+        print(f"Basis vector {i}")
+        occ = 0.0
+        for j in range(2*N):
+            for k in range(2**(2*N)):
+                if(k & (0x1 << j)):
+                    occ += bv[k] * bv[k].conj()
+        print(f"occ = {occ}")
+
     ### Testing the surrogate model against random parameters
     errors = []
     all_ps = []
     for i in range(200):
-        H_full = np.zeros_like(model.H_terms[0], dtype=complex)
+        H_full = np.zeros((model.size, model.size), dtype=complex)
 
         if model_type == "TFIM":
             J = 2 * np.random.randn()
@@ -269,17 +266,13 @@ if __name__ == "__main__":
                 },
             )
 
-        if model_type == "AIM" or model_type == "fermi_hubbard":
-            id_loc = np.where(np.array([t[0] for t in model_paulis]) == "")[0][0]
-            grid_point1 = [model_paulis[id_loc][1]]
-            parameters = grid_point1 + [
-                model_paulis[k][1] for k in range(len(model_paulis)) if k != id_loc
-            ]
-        else:
-            parameters = [t[1] for t in model_paulis]
+        paulis_dict = {}
+        for t in model_paulis:
+            paulis_dict[t[0]] = t[1]
+        parameters = paulis_dict
 
-        for i, h in enumerate(model.H_terms):
-            H_full += parameters[i] * h
+        for pauli in model.H_terms.keys():
+            H_full += parameters[pauli] * model.H_terms[pauli]
 
         if model.sparse:
             evals, evecs = sps.linalg.eigsh(H_full.real)
@@ -300,7 +293,7 @@ if __name__ == "__main__":
         print()
         all_ps.append(parameters)
     print("Basis Size:", basis.shape[1])
-    print("Full Hilbert Size:", model.H_terms[0].shape[0])
+    print("Full Hilbert Size:", model.size)
     plt.plot(errors, "o-")
     plt.xlabel("Test Case")
     plt.ylabel("Relative Error")
