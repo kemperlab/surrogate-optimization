@@ -192,7 +192,8 @@ class SurrogateModel:
         self,
         pregenerate_fulls: bool = False,
         save: bool = False,
-        log=False
+        log=False,
+        processes=1
     ):
         """
         Builds H_terms and H2_terms
@@ -204,39 +205,59 @@ class SurrogateModel:
         """
         start_time = time.perf_counter()
         self.H_terms = {}
-        for pauli_string in self.pauli_strings:
-            if save:
-                if pauli_string == "":
-                    filename = self.save_folder + "/I.bin"
-                else:
-                    filename = self.save_folder + "/" + pauli_string + ".bin"
 
-                try:
-                    H_term = np.fromfile(filename, dtype=float).reshape(
-                        (self.size, self.size)
-                    )
-                    self.H_terms.append(np.astype(H_term, complex))
-                except:
-                    self.H_terms.append(
-                        gen_from_pauli_string(
+        if processes == 1:
+            for pauli_string in self.pauli_strings:
+                if save:
+                    if pauli_string == "":
+                        filename = self.save_folder + "/I.bin"
+                    else:
+                        filename = self.save_folder + "/" + pauli_string + ".bin"
+
+                    try:
+                        H_term = np.fromfile(filename, dtype=float).reshape(
+                            (self.size, self.size)
+                        )
+                        self.H_terms[pauli_string] = np.astype(H_term, complex))
+                    except:
+                        self.H_terms[pauli_string] = gen_from_pauli_string(
                             self.N,
                             pauli_string,
                             self.particle_selection,
                             ordering=self.basis_ordering,
                             sparse=self.sparse
-                        ),
+                        )
+
+                        np.astype(self.H_terms[-1], float).tofile(filename)
+
+                else:
+                    self.H_terms[pauli_string] = gen_from_pauli_string(
+                        self.N,
+                        pauli_string,
+                        self.particle_selection,
+                        ordering=self.basis_ordering,
+                        sparse=self.sparse
                     )
-
-                    np.astype(self.H_terms[-1], float).tofile(filename)
-
-            else:
-                self.H_terms[pauli_string] = gen_from_pauli_string(
-                    self.N,
-                    pauli_string,
-                    self.particle_selection,
+        else:
+            ppe = ProcessPoolExecutor(processes)
+            batch_size = int(len(self.pauli_strings) / processes + 1)
+            pauli_string_batches = [
+                self.pauli_strings[j:j + batch_size]
+                for j in range(0, len(self.pauli_strings), batch_size)
+            ]
+            H_terms_list = list(ppe.map(
+                partial(
+                    gen_from_pauli_string_batch,
+                    N=self.N,
+                    particle_selection=self.particle_selection,
                     ordering=self.basis_ordering,
                     sparse=self.sparse
-                )
+                ),
+                pauli_string_batches
+            ))
+            self.H_terms = {}
+            for H_terms_element in H_terms_list:
+                self.H_terms.update(H_terms_element)
 
         self.H2_terms = {}
         for h_i in self.H_terms.keys():
@@ -514,7 +535,7 @@ class SurrogateModel:
                         degeneracy_truncation
                     ))
             else:
-                batch_size = int(len(not_chosen) / processes + 0.5)
+                batch_size = int(len(not_chosen) / processes + 1)
                 not_chosen_batches = [
                     not_chosen[j:j + batch_size]
                     for j in range(0, len(not_chosen), batch_size)

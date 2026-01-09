@@ -140,11 +140,10 @@ if __name__ == "__main__":
         training_grid,
         particle_selection=ps,
         basis_ordering=surrogate_ord,
-        log=True
+        log=False
     )
-    exit()
 
-    model.build_terms()
+    model.build_terms(processes=4)
     print("Done building terms")
 
     # Calculate the real solutions for testing (only for 2D parameter grids)

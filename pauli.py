@@ -233,6 +233,25 @@ def gen_from_pauli_string(
                 mat = mat[:, basis][basis]
             return mat
 
+def gen_from_pauli_string_batch(
+    pauli_strings: list[str]=None,
+    N: int=None,
+    particle_selection: tuple[int, int] | int = None,
+    ordering="uudd",
+    sparse=False
+):
+    H_terms = {}
+    for pauli in pauli_strings:
+        H_terms[pauli] = gen_from_pauli_string(
+            N,
+            pauli,
+            particle_selection,
+            ordering,
+            sparse
+        )
+    return H_terms
+
+
 def model_to_paulis(
     N: int, model: str, model_parameters: dict
 ) -> list[tuple[str, complex]]:
