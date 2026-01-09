@@ -441,6 +441,7 @@ class SurrogateModel:
         svd_tolerance: float = 1e-8,
         degeneracy_truncation: int = 5,
         save=False,
+        residue_graphing=False,
         processes=1
     ):
         start_time = time.perf_counter()
@@ -607,12 +608,13 @@ class SurrogateModel:
 
                 break
 
-            plt.plot(not_chosen, np.array(residues).real, "o-")
-            plt.plot([next_choice], [max_res2.real], "rx", label="Next Choice")
-            plt.xlabel("Training Grid Index")
-            plt.ylabel("Residue")
-            plt.title(f"It {i + 1} Residues")
-            plt.show()
+            if residue_graphing:
+                plt.plot(not_chosen, np.array(residues).real, "o-")
+                plt.plot([next_choice], [max_res2.real], "rx", label="Next Choice")
+                plt.xlabel("Training Grid Index")
+                plt.ylabel("Residue")
+                plt.title(f"It {i + 1} Residues")
+                plt.show()
 
             print("Full system size:", self.size)
 
