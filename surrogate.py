@@ -29,13 +29,42 @@ class SurrogateModel:
         The number of particles in the system
     pauli_strings: `list[str]`
         A list of Pauli strings that comprise the Hamiltonian
-    H_terms : `list[np.ndarray]`
+    H_terms : `dict[str, np.ndarray]`
         A list of each term (as a matrix) in the Hamiltonian
-    H2_terms : `list[np.ndarray]`
+    H2_terms : `dict[str, np.ndarray]`
         A list of each term (as a matrix) in the square of the Hamiltonian
-    H_fulls : `list[np.ndarray]`
+    H_fulls : `dict[str, np.ndarray]`
         A list of the Hamiltonians for each training grid parameter in the
         full Hilbert space
+    training_grid : `np.ndarray`
+        A NumPy array of dicts representing the training grid of parameters,
+        each dict maps a pauli string to a coefficient for that term.
+    training_grid2 : `np.ndarray`
+        A NumPy array of dicts representing the square of the training grid of
+        parameters, each dict maps a two multiplied pauli string to a
+        coefficient for that term.
+    opt_basis : `np.ndarray`
+        A matrix with the columns representing basis vectors, this is the
+        optimal basis calculated by the surrogate optimization, None until
+        optimize is run.
+    overlap : `np.ndarray`
+        The overlap matrix for the optimal basis
+    reduced_terms : `dict[str, np.ndarray]`
+        A dictionary maping pauli strings to their matrix representation in the
+        optimal, reduced basis.
+    particle_selection : `tuple[int, int] | int`
+        The particle selection for the model. An integer for non-spin-selected,
+        a tuple (up, down) for spin-selected, or None for non-particle-selected
+    basis_ordering : `str`
+        The ordering of up and down spins in the basis, uudd or udud
+    sparse : bool
+        Whether or not sparse matrices are being used, True if N > _SPARSE_LIMIT
+    log : bool
+        Whether or not to log results
+    save_folder : str
+        The folder to save in
+    size : int
+        The size of the Hilbert space, 2**N if not using particle-selection
     """
 
     _SPARSE_LIMIT: int
@@ -43,15 +72,15 @@ class SurrogateModel:
     model_name: str
     N: int
     pauli_strings: list[str]
-    H_terms: list[np.ndarray]
-    H2_terms: list[np.ndarray]
-    H_fulls: list[np.ndarray]
-    training_grid: list[list[complex]]
-    training_grid2: list[list[complex]]
+    H_terms: dict[str, np.ndarray]
+    H2_terms: dict[str, np.ndarray]
+    H_fulls: dict[str, np.ndarray]
+    training_grid: np.ndarray
+    training_grid2: np.ndarray
     opt_basis: np.ndarray
     overlap: np.ndarray
-    reduced_terms: list[np.ndarray]
-    particle_selection: tuple[int, int] | int = None
+    reduced_terms: dict[str, np.ndarray]
+    particle_selection: tuple[int, int] | int
     basis_ordering: str
     sparse: bool
     log: bool
@@ -63,7 +92,7 @@ class SurrogateModel:
         model_name: str,
         N: int,
         pauli_strings: list[str],
-        training_grid: list[list[complex]],
+        training_grid: np.ndarray,
         particle_selection: tuple[int, int] | int = None,
         basis_ordering: str = "uudd",
         log: bool = False
@@ -75,8 +104,23 @@ class SurrogateModel:
         -----------
         model_name : `str`
             the name of the model to use when saving files
+        N : `int`
+            The number of particles in the system
+        pauli_strings: `list[str]`
+            A list of Pauli strings that comprise the Hamiltonian
+        training_grid : `np.ndarray`
+            A NumPy array of dicts representing the training grid of parameters,
+            each dict maps a pauli string to a coefficient for that term.
+        particle_selection : `tuple[int, int] | int`
+            The particle selection for the model. An integer for
+            non-spin-selected, a tuple (up, down) for spin-selected, or None for
+            non-particle-selected
+        basis_ordering : `str`
+            The ordering of up and down spins in the basis, uudd or udud
+        log : bool
+            Whether or not to log results
         """
-        self._SPARSE_LIMIT = 1000
+        self._SPARSE_LIMIT = 8
 
         self.model_name = model_name
 
@@ -118,17 +162,26 @@ class SurrogateModel:
         if self.log:
             if not os.path.isdir(self.save_folder):
                 os.mkdir(self.save_folder)
-            #self.training_grid.tofile(
-            #    (self.save_folder + "/" + "training_grid_"
-            #     + datetime.now().isoformat() + ".bin").replace(":", ".")
-            #)
-        
+            np.savez(
+                (self.save_folder + "/" + "training_grid_"
+                + datetime.now().isoformat()).replace(":", "."),
+                self.training_grid
+            )
+
         self._append_to_log(f"Model initialized with: {self.pauli_strings}")
 
     def _append_to_log(
         self,
         text: str
     ):
+        """
+        Appends the given text to the log file
+
+        Parameters
+        ----------
+        text : `str`
+            The text to append to the log file
+        """
         if self.log:
             if not os.path.isdir(self.save_folder):
                 os.mkdir(self.save_folder)
@@ -141,6 +194,14 @@ class SurrogateModel:
         save: bool = False,
         log=False
     ):
+        """
+        Builds H_terms and H2_terms
+
+        Parameters
+        ----------
+        pregenerate_fulls : bool
+            Pregenerate the Hamiltonian for each training grid point
+        """
         start_time = time.perf_counter()
         self.H_terms = {}
         for pauli_string in self.pauli_strings:
@@ -194,21 +255,42 @@ class SurrogateModel:
                     )
             self.training_grid2.append(bulk)
 
-        if pregenerate_fulls:
-            self.H_fulls = []
-            for i in range(len(self.training_grid)):
-                self.H_fulls.append(self._build_H_full(i))
-
         end_time = time.perf_counter()
 
         self._append_to_log(
             "H Terms build in: " + str(end_time - start_time) + " seconds"
         )
 
+        if pregenerate_fulls:
+            start_time = time.perf_counter()
+
+            self.H_fulls = []
+            for i in range(len(self.training_grid)):
+                self.H_fulls.append(self._build_H_full(i))
+            
+            end_time = time.perf_counter()
+            self._append_to_log(
+                "H Fulls build in: " + str(end_time - start_time) + " seconds"
+            )
+
     def _build_H_full(
         self,
         parameter_idx: int
     ) -> np.ndarray:
+        """
+        Builds the full Hamiltonian for a given paremeter index
+
+        Parameters
+        ----------
+        parameter_idx : `int`
+            the parameter index to build the full Hamiltonian for
+
+        Returns
+        -------
+        H_full : `np.ndarray`
+            The matrix in the full Hilbert space
+        """
+
         H_full = np.zeros((self.size, self.size), dtype=complex)
         for pauli in self.pauli_strings:
             H_full += (
@@ -219,13 +301,36 @@ class SurrogateModel:
 
     def _calculate_residue2_batch(
         self,
-        js: int,
+        js: list[int],
         basis: np.ndarray = None,
         overlap: np.ndarray = None,
-        Hr_terms: list[np.ndarray] = None,
-        H2r_terms: list[np.ndarray] = None,
-        degeneracy_truncation: float = None,
+        Hr_terms: dict[str, np.ndarray] = None,
+        H2r_terms: dict[str, np.ndarray] = None,
+        degeneracy_truncation: int = None,
     ):
+        """
+        Calculates residues for a batch of parameter indices
+
+        Parameters
+        ----------
+        js : `list[int]`
+            The list of parameter indices to calculate residues for
+        basis : `np.ndarray`
+            The current basis to use for residue calculations
+        overlap : `np.ndarray`
+            The current overlap matrix to use for residue calculations
+        Hr_terms : `np.ndarray`
+            The current reduced terms to use for residue calculations
+        H2r_terms : `np.ndarray`
+            The current reduced terms squared to use for residue calculations
+        degeneracy_truncation : `int`
+            The max degeracy in the ground state to sue for residue calculations
+
+        Returns
+        -------
+        residues : `list[float]`
+            A list of residues for the given parameter indices
+        """
         residues = []
         for j in js:
             residues.append(
@@ -250,16 +355,36 @@ class SurrogateModel:
         H2r_terms: list[np.ndarray] = None,
         degeneracy_truncation: float = None
     ):
+        """
+        Calculates residues for a batch of parameter indices
+
+        Parameters
+        ----------
+        j : `int`
+            The parameter index to calculate the residue for
+        basis : `np.ndarray`
+            The current basis to use for residue calculation
+        overlap : `np.ndarray`
+            The current overlap matrix to use for residue calculation
+        Hr_terms : `np.ndarray`
+            The current reduced terms to use for residue calculation
+        H2r_terms : `np.ndarray`
+            The current reduced terms squared to use for residue calculation
+        degeneracy_truncation : `int`
+            The max degeracy in the ground state to sue for residue calculation
+
+        Returns
+        -------
+        res2 : `float`
+            The residue for the given parameter index
+        """
         Hr = np.zeros((basis.shape[1], basis.shape[1]), dtype=complex)
         for pauli in Hr_terms.keys():
             Hr += self.training_grid[j][pauli] * Hr_terms[pauli]
-        """
+
         H2r = np.zeros((basis.shape[1], basis.shape[1]), dtype=complex)
-        for p2, h2r in zip(self.training_grid2[j], H2r_terms):
-            H2r += p2 * h2r
-        """
-        H_full = self._build_H_full(j)
-        H2r = basis.conj().T @ H_full @ H_full @ basis
+        for pauli2 in H2r_terms.keys():
+            H2r += self.training_grid2[j][pauli2] * H2r_terms[pauli2]
 
         evals, evecs = sp.linalg.eigh(Hr, overlap)
 

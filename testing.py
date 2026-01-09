@@ -140,8 +140,9 @@ if __name__ == "__main__":
         training_grid,
         particle_selection=ps,
         basis_ordering=surrogate_ord,
-        log=False
+        log=True
     )
+    exit()
 
     model.build_terms()
     print("Done building terms")
