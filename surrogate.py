@@ -21,8 +21,6 @@ class SurrogateModel:
 
     Attributes:
     -----------
-    _SPARSE_LIMIT : `int`
-        The highest N  that can be used before sparse matrices are used
     model_name : `str`
         The name to use for the model when saving files
     N : `int`
@@ -58,7 +56,7 @@ class SurrogateModel:
     basis_ordering : `str`
         The ordering of up and down spins in the basis, uudd or udud
     sparse : bool
-        Whether or not sparse matrices are being used, True if N > _SPARSE_LIMIT
+        Whether or not sparse matrices are being used, default to True
     log : bool
         Whether or not to log results
     save_folder : str
@@ -66,8 +64,6 @@ class SurrogateModel:
     size : int
         The size of the Hilbert space, 2**N if not using particle-selection
     """
-
-    _SPARSE_LIMIT: int
 
     model_name: str
     N: int
@@ -95,7 +91,8 @@ class SurrogateModel:
         training_grid: np.ndarray,
         particle_selection: tuple[int, int] | int = None,
         basis_ordering: str = "uudd",
-        log: bool = False
+        log: bool = False,
+        sparse=True
     ):
         """
         Contructs the surrogate model for a given Hamiltonian
@@ -120,16 +117,10 @@ class SurrogateModel:
         log : bool
             Whether or not to log results
         """
-        self._SPARSE_LIMIT = 8
-
         self.model_name = model_name
 
         self.N = N
-        if self.N > self._SPARSE_LIMIT:
-            self.sparse = True
-        else:
-            self.sparse = False
-
+        self.sparse = sparse
         self.pauli_strings = pauli_strings
         self.H_terms = None
         self.H2_terms = None
@@ -200,8 +191,15 @@ class SurrogateModel:
 
         Parameters
         ----------
-        pregenerate_fulls : bool
+        pregenerate_fulls : `bool`
             Pregenerate the Hamiltonian for each training grid point
+        save : `bool`
+            If true, either load the H terms from already saved files or save
+            the generated H terms to a file
+        log : `bool`
+            Whether or not to save logging information
+        processes : `int`
+            If greater than 1, using multithreading to generate the H_terms
         """
         start_time = time.perf_counter()
         self.H_terms = {}
@@ -218,7 +216,7 @@ class SurrogateModel:
                         H_term = np.fromfile(filename, dtype=float).reshape(
                             (self.size, self.size)
                         )
-                        self.H_terms[pauli_string] = np.astype(H_term, complex))
+                        self.H_terms[pauli_string] = np.astype(H_term, complex)
                     except:
                         self.H_terms[pauli_string] = gen_from_pauli_string(
                             self.N,
@@ -440,10 +438,43 @@ class SurrogateModel:
         solution_grid: tuple[np.ndarray, np.ndarray] = None,
         svd_tolerance: float = 1e-8,
         degeneracy_truncation: int = 5,
-        save=False,
-        residue_graphing=False,
+        save: bool = False,
+        residue_graphing: bool = False,
         processes=1
     ):
+        """
+        Does the actual surrogate optimiation
+
+        Parameters
+        ----------
+        residue_threshold : `float`
+            The value that the maximum residual should be before terminating
+            the surrogate optimization
+        init_vec : `np.ndarray`
+            An initial vector to use for the optimization. Should have a size
+            given by `self.size`
+        solution_grid : `np.ndarray`
+            For use with two parameters being varied only. A grid of actual
+            ground state energies to graph and check against. Not used in the
+            actual optimization process, only for testing.
+        svd_tolerance : `float`
+            The value to consider "zero" when doing an SVD.
+        degeneracy_truncation : `int`
+            The maximum number of degenerate eigenvectors to include in the
+            ground state
+        save : `bool`
+            Whether or not to attempt to load the optimal basis from a file. If
+            the attempt fails, run the optimization and save it to a file.
+        residue_graphing : `bool`
+            Show a graph of the residuals for each parameter point for each
+            iteration
+
+        Returns
+        -------
+        self.opt_basis : `np.ndarray`
+            A matrix representing the optimal basis, with columns representing
+            each basis vector. There will be `self.size` number of rows
+        """
         start_time = time.perf_counter()
 
         if processes > 1:
@@ -486,7 +517,7 @@ class SurrogateModel:
             else:
                 H_full = self.H_fulls[0]
             if self.sparse:
-                evals, evecs = sps.linalg.eigsh(H_full.real)
+                evals, evecs = sps.linalg.eigsh(H_full.real, k=50, which='SA')
             else:
                 evals, evecs = sp.linalg.eigh(H_full)
             init_vec = evecs[:, 0]
@@ -577,7 +608,7 @@ class SurrogateModel:
                 chosen_H_full = self.H_fulls[next_choice]
 
             if self.sparse:
-                evals, evecs = sps.linalg.eigsh(chosen_H_full.real)
+                evals, evecs = sps.linalg.eigsh(chosen_H_full.real, k=50, which='SA' )
             else:
                 evals, evecs = sp.linalg.eigh(chosen_H_full)
 
@@ -677,7 +708,7 @@ class SurrogateModel:
         if save:
             np.astype(self.opt_basis, float).tofile(filename)
 
-        return basis
+        return self.opt_basis
 
     def _graph_solution_comparison(
         self,
@@ -747,6 +778,23 @@ class SurrogateModel:
         self,
         parameters: list[complex],
     ) -> complex:
+        """
+        Approximate the eigenvalues and eigenvectors for a given set of
+        parameters
+
+        Parameters
+        ----------
+        parameters : `list[complex]`
+            The parameters to approximate eigenvalues and eigenvectors for
+        
+        Returns
+        -------
+        evals : `np.ndarray`
+            A list of the eigenvalues
+        evecs : `np.ndarray`
+            A matrix of the eigenvectors, with each column representing each
+            eigenvector
+        """
         if (
             type(self.opt_basis) == type(None)
             or type(self.overlap) == type(None)
@@ -770,4 +818,4 @@ class SurrogateModel:
 
         evals, evecs = sp.linalg.eigh(Hr, self.overlap)
 
-        return evals[0]
+        return evals, evecs

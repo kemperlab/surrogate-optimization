@@ -6,13 +6,10 @@ if __name__ == "__main__":
     ###############################################################
     # Residue threshold for terminating optimization (lower means more accurate,
     # at the cost of more basis vectors)
-    res_thresh = 1e-3
+    res_thresh = 1e-6
 
     # For removing linear dependence in basis vectors
     svd_tol = 1e-8
-
-    # Parameter grid values for training grid
-    mu = np.linspace(-5.0, 5.0, 20)
 
     # Number of sites (total for TFIM/TFXY/Heisenberg, per spin for fermi_hubbard, AIM)
     N = 4
@@ -25,6 +22,13 @@ if __name__ == "__main__":
     # AIM = Single Impurity Anderson Model, fermi_hubbard, TFIM, TFXY,
     # heisenberg
     model_type = "fermi_hubbard"
+
+    # Parameter grid values for training grid
+    mu = np.linspace(-5.0, 5.0, 20)
+    mu_2 = np.linspace(-5.0, 5.0, 20)
+
+    if model_type == "fermi_hubbard":
+        mu_2 = np.linspace(1.0, 5.0, 20)
 
     if model_type == "TFIM":
         model_parameters = {
@@ -48,11 +52,11 @@ if __name__ == "__main__":
             "periodic": False,
         }
     elif model_type == "fermi_hubbard":
-        U = 1.0
+        mu_chem = 0.5
         model_parameters = {
             "t": 1.0,
             "mu": 1.0,
-            "U": U,
+            "U": 1.0,
             "periodic": False,
         }
     elif model_type == "AIM":
@@ -85,7 +89,7 @@ if __name__ == "__main__":
     # being parameterized over two parameters
     training_grid = []
     for m1 in mu:
-        for m2 in mu:
+        for m2 in mu_2:
             if model_type == "TFIM":
                 model_parameters["J"] = m1
                 model_parameters["h"] = m2
@@ -100,7 +104,7 @@ if __name__ == "__main__":
                 model_parameters["h"] = 0.1
             elif model_type == "fermi_hubbard":
                 model_parameters["t"] = m1
-                model_parameters["mu"] = 0.5
+                model_parameters["mu"] = mu_chem
                 model_parameters["U"] = m2
             elif model_type == "AIM":
                 model_parameters["vb"] = np.array(
@@ -140,10 +144,11 @@ if __name__ == "__main__":
         training_grid,
         particle_selection=ps,
         basis_ordering=surrogate_ord,
+        sparse=True,
         log=False
     )
 
-    model.build_terms(processes=4)
+    model.build_terms(processes=1)
     print("Done building terms")
 
     # Calculate the real solutions for testing (only for 2D parameter grids)
@@ -155,7 +160,7 @@ if __name__ == "__main__":
             for pauli in model.H_terms.keys():
                 H_full += parameters[pauli] * model.H_terms[pauli]
             if model.sparse:
-                evals, evecs = sps.linalg.eigsh(H_full.real)
+                evals, evecs = sps.linalg.eigsh(H_full.real, k=50, which='SA')
             else:
                 evals, evecs = np.linalg.eigh(H_full)
             solution_grid[i, j] = evals[0]
@@ -167,6 +172,7 @@ if __name__ == "__main__":
         ),  # Comment this out if no solution grid is desired
         svd_tolerance=svd_tol,
         residue_threshold=res_thresh,
+        residue_graphing=True,
         processes=1
     )
     print("Basis Size", basis.shape[1])
@@ -234,9 +240,9 @@ if __name__ == "__main__":
                 N,
                 model_type,
                 {
+                    "mu": mu_chem,
                     "t": 2 * np.random.randn(),
-                    "mu": 2 * np.random.randn(),
-                    "U": U,
+                    "U": (5.0 - 1.0) * np.random.rand() + 1.0,
                 },
             )
         elif model_type == "AIM":
@@ -275,17 +281,18 @@ if __name__ == "__main__":
             H_full += parameters[pauli] * model.H_terms[pauli]
 
         if model.sparse:
-            evals, evecs = sps.linalg.eigsh(H_full.real)
+            evals, evecs = sps.linalg.eigsh(H_full.real, k=50, which='SA')
         else:
             evals, evecs = np.linalg.eigh(H_full)
 
         # print(parameters)
+        test_evals, test_evecs = model.solve(parameters)
         print("Real", evals[0])
-        print("Approx", model.solve(parameters))
+        print("Approx", test_evals[0])
         if abs(evals[0]) < 1e-12:
-            errors.append(np.abs(evals[0] - model.solve(parameters)))
+            errors.append(np.abs(evals[0] - test_evals[0]))
         else:
-            errors.append(np.abs(evals[0] - model.solve(parameters)) / np.abs(evals[0]))
+            errors.append(np.abs(evals[0] - test_evals[0]) / np.abs(evals[0]))
         print(
             "Relative Error",
             errors[-1],
