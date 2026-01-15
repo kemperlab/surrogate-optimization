@@ -53,4 +53,29 @@ The `solve` method inputs a list of parameters for the Hamiltonian, and using th
 
 ## Test Run
 The following shows results from running the Anderson Impurity Model with 1 impurity orbital and 3 bath orbitals.
+
+The following is the initial ground state energy errors. The orange dot show which parameter point is currently in the basis.
 <img width="768" height="686" alt="image" src="https://github.com/user-attachments/assets/197d926c-a678-48c4-83d8-fc61f064b369" />
+
+During the first iteration, the maximum residue is selected. This is shown by the red X.
+<img width="716" height="555" alt="image" src="https://github.com/user-attachments/assets/5025a25a-f0c7-42a4-9397-145f14b10322" />
+
+Then the solution grid is shown, with the red X showing the last chosen parameter point again.
+<img width="707" height="571" alt="image" src="https://github.com/user-attachments/assets/7307ac0a-ff09-4caa-8237-8ef46c3b65b6" />
+
+A couple of iterations later, we can view what the residues and the solution grid looks like.
+<img width="727" height="574" alt="image" src="https://github.com/user-attachments/assets/bb3db6ab-e5b6-4cfb-bf6f-9ac235a739f6" />
+<img width="791" height="679" alt="image" src="https://github.com/user-attachments/assets/12edbc47-bbd6-4991-94d1-d8dc1264e72d" />
+
+At termination, the errors in the solution grid and the residues look like
+<img width="770" height="691" alt="image" src="https://github.com/user-attachments/assets/598a4356-275c-474b-8306-33e6ae4591f0" />
+<img width="745" height="575" alt="image" src="https://github.com/user-attachments/assets/39a2c746-de44-4aaa-bf1c-af179bd3ffa5" />
+
+After sampling with random sample points, we see that the optimizaiton successfully reduces the subspace size to 10.
+<img width="761" height="575" alt="image" src="https://github.com/user-attachments/assets/65e83948-325d-417f-94bc-03f38936c9e6" />
+
+
+
+
+
+
