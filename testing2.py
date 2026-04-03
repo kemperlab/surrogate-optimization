@@ -12,11 +12,15 @@ if __name__ == "__main__":
     # at the cost of more basis vectors)
     res_thresh = 1e-6
 
+    # max condition number of the overlap matrix. We do an SVD to try to reduce,
+    # this, but it will eventually blow up
+    max_condition = 1e9
+
     # For removing linear dependence in basis vectors
     svd_tol = 1e-8
 
-    # eigenvalue shift
-    eigen_shift = 0
+    # max number of states to include in degenerate ground states
+    degeneracy_truncation = 5
 
     # proportion of the Hilbert space size to look for eigenvalues in during
     # sparse computations
@@ -180,9 +184,13 @@ if __name__ == "__main__":
             solution_grid[i, j] = evals[0]
 
     basis = model.optimize(
-        EnergyConvergenceCostFunction(1e-8)
+        #EnergyConvergenceCostFunction(1e-8)
         #VarianceCostFunction(model.H_terms, model.training_grid, 1e-8)
-        #ResidualCostFunction(model.H_terms)
+        #ResidualCostFunction(model.H_terms),
+        max_condition=max_condition,
+        svd_tolerance=svd_tol,
+        sparse_proportion=sparse_proportion,
+        degeneracy_truncation=degeneracy_truncation
     )
     print("Basis Size", basis.shape[1])
 
