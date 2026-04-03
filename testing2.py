@@ -27,12 +27,12 @@ if __name__ == "__main__":
     sparse_proportion = .25
 
     # Number of sites (total for TFIM/TFXY/Heisenberg, per spin for fermi_hubbard, AIM)
-    N = 4
+    N = 8
 
     # None or Between 0 and N (2*N for AIM, fermi_hubbard), N for
     # TFIM/TFXY/Heisenberg. Can be tuple for (n_up, n_down) for AIM,
     # fermi_hubbard
-    ps = None
+    ps = 4
 
     # AIM = Single Impurity Anderson Model, fermi_hubbard, TFIM, TFXY,
     # heisenberg
@@ -184,8 +184,8 @@ if __name__ == "__main__":
             solution_grid[i, j] = evals[0]
 
     basis = model.optimize(
-        #EnergyConvergenceCostFunction(1e-8)
-        #VarianceCostFunction(model.H_terms, model.training_grid, 1e-8)
+        #EnergyConvergenceCostFunction(1e-8),
+        VarianceCostFunction(model.H_terms, model.training_grid, 1e-8),
         #ResidualCostFunction(model.H_terms),
         max_condition=max_condition,
         svd_tolerance=svd_tol,
