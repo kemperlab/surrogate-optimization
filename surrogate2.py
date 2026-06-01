@@ -7,7 +7,6 @@ from pathos.multiprocessing import ProcessPool
 from costfunction import *
 from functools import partial
 from pauli import *
-from typing import Callable
 
 class SurrogateModel:
     # Model Parameters

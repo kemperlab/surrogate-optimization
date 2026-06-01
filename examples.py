@@ -6,7 +6,7 @@ from pauli import *
 from surrogate2 import SurrogateModel
 
 class EnergyConvergenceCostFunction(
-    CostFunctionInterface[float, SurrogateModel]
+    CostFunctionInterface[float]
 ):
     model: SurrogateModel
     energy_convergence: float
@@ -102,7 +102,7 @@ class EnergyConvergenceCostFunction(
 
         return True
 
-class VarianceCostFunction(CostFunctionInterface[float, SurrogateModel]):
+class VarianceCostFunction(CostFunctionInterface[float]):
     H2_terms: dict
     training_grid2: list
 
@@ -214,7 +214,7 @@ class VarianceCostFunction(CostFunctionInterface[float, SurrogateModel]):
     ) -> bool:
         return iteration_costs[-1] < self.res2_threshold
 
-class ResidualCostFunction(CostFunctionInterface[float, SurrogateModel]):
+class ResidualCostFunction(CostFunctionInterface[float]):
     projection: np.ndarray
     H_terms: dict
 

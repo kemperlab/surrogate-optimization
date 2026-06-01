@@ -1,12 +1,14 @@
 import abc
 import numpy as np
 
-from typing import TypeVar, Generic
+from typing import TypeVar, Generic, TYPE_CHECKING
 
 T = TypeVar('T')
-M = TypeVar('Model')
 
-class CostFunctionInterface(Generic[T, M], abc.ABC):
+if TYPE_CHECKING:
+    from surrogate2 import SurrogateModel
+
+class CostFunctionInterface(Generic[T], abc.ABC):
     @abc.abstractmethod
     def preiteration(self):
         """
