@@ -3,122 +3,68 @@ import copy
 import numpy as np
 import scipy as sp
 
+from pathos.multiprocessing import ProcessPool
 from costfunction import *
 from functools import partial
 from pauli import *
 from typing import Callable
 
-def create_variance_closure(H_terms, training_grid):
-    degeneracy_truncation = 5
-    H2_terms = {}
-    for h_i in H_terms.keys():
-        for h_j in H_terms.keys():
-            H2_terms[h_i + " * " + h_j] = (
-                H_terms[h_i] @ H_terms[h_j]
-            )
-
-    training_grid2 = []
-    for mu in training_grid:
-        bulk = {}
-        for mu_i in mu.keys():
-            for mu_j in mu.keys():
-                bulk[mu_i  + " * " +  mu_j] = (
-                    mu[mu_i] * mu[mu_j]
-                )
-        training_grid2.append(bulk)
-
-    def variance_cf(Hr_terms, basis, overlap, training_point, training_idx):
-        Hr = np.zeros((basis.shape[1], basis.shape[1]), dtype=complex)
-        H2r = np.zeros((basis.shape[1], basis.shape[1]), dtype=complex)
-
-        for pauli in Hr_terms.keys():
-            Hr += training_point[pauli] * Hr_terms[pauli]
-        for pauli in H2_terms.keys():
-            H2r += (
-                training_grid2[training_idx][pauli] * basis.conj().T
-                @ H2_terms[pauli] @ basis
-            )
-
-        evals, evecs = sp.linalg.eigh(
-            Hr,
-            overlap
-        )
-
-        # find degeneracy of the ground state
-        degeneracy = 0
-        eps = 1e-10 # for comparing floating points of GSE
-        for e in evals:
-            # absolute value is not needed here, e >= evals[0]
-            if e - evals[0] < eps:
-                degeneracy += 1
-            else:
-                break
-            if degeneracy >= degeneracy_truncation:
-                break
-
-        # calculate residue
-        res2 = 0
-        for k in range(degeneracy):
-            res2 += (
-                evecs[:, k].conj().T
-                @ (H2r - ((evals[k] * evals[k]) * overlap))
-                @ evecs[:, k]
-            )
-
-        return res2
-    return variance_cf
-
-
-def energy_cf(Hr_terms, basis, overlap, training_point, training_idx):
-    Hr = np.zeros((basis.shape[1], basis.shape[1]), dtype=complex)
-    for pauli in Hr_terms.keys():
-        Hr += training_point[pauli] * Hr_terms[pauli]
-
-    evals, evecs = sp.linalg.eigh(Hr, overlap)
-
-    return evals[0];
-
 class SurrogateModel:
     # Model Parameters
     model_name: str
+    model_params: list[str]
     N: int
     pauli_strings: list[str]
     particle_selection: tuple[int, int] | int | None
     basis_ordering: str
     sparse: bool
+    max_it: int
+    processes: int
 
     # Output
-    overlap: np.ndarray | None
+    opt_overlap: np.ndarray | None
     opt_basis: np.ndarray | None
-    reduced_terms: dict[str, np.ndarray] | None
+    opt_Hr_terms: dict[str, np.ndarray] | None
 
     # Internal State
+    size: int
     H_terms: dict[str, np.ndarray] | None
+    H_fulls: dict[str, np.ndarray] | None
+    overlap: np.ndarray | None
+    basis: np.ndarray | None
+    Hr_terms: dict[str, np.ndarray] | None
+    pp: ProcessPool | None
 
     def __init__(
         self,
         model_name: str,
+        model_params: list[str],
         N: int,
         pauli_strings: list[str],
-        training_grid: np.ndarray,
         particle_selection: tuple[int, int] | int | None = None,
         basis_ordering: str = "uudd",
-        sparse: bool = True
+        sparse: bool = True,
+        max_it: int | None = None,
+        processes: int = 1
     ):
         self.model_name = model_name
+        self.model_params = model_params
         self.N = N
         self.pauli_strings = pauli_strings
-        self.training_grid = training_grid
         self.particle_selection = particle_selection
         self.basis_ordering = basis_ordering
         self.sparse = sparse
+        self.processes = processes
 
-        self.overlap = None
+        self.opt_overlap = None
         self.opt_basis = None
-        self.reduced_terms = None
+        self.opt_Hr_terms = None
 
         self.H_terms = None
         self.H_fulls = None
+        self.overlap = None
+        self.basis = None
+        self.Hr_terms = None
         
         if type(self.particle_selection) == type(None):
             self.size = 2**N
@@ -134,186 +80,220 @@ class SurrogateModel:
                 "Particle selection should be an int, a tuple, or None"
             )
 
+        if type(max_it) == type(None):
+            self.max_it = self.size
+        else:
+            self.max_it = max_it
+
+        if self.processes == 1:
+            self.pp = None
+        elif self.processes > 1:
+            self.pp = ProcessPool(nodes=processes)
+        else:
+            raise Exception(
+                "Number of processes should be an integer greater than or equal"
+                + " to one"
+            )
+
     def build_terms(
         self,
         pregenerate_fulls: bool = False,
-        processes: int = 1
     ):
         self.H_terms = {}
 
-        if processes == 1:
+        if self.processes == 1:
             for pauli_string in self.pauli_strings:
                 self.H_terms[pauli_string] = gen_from_pauli_string(
-                    self.N,
                     pauli_string,
+                    self.N,
                     self.particle_selection,
                     ordering=self.basis_ordering,
                     sparse=self.sparse
                 )
 
         else:
-            ppe = ProcessPoolExecutor(processes)
-            batch_size = int(len(self.pauli_strings) / processes + 1)
-            pauli_string_batches = [
-                self.pauli_strings[j:j + batch_size]
-                for j in range(0, len(self.pauli_strings), batch_size)
-            ]
-            H_terms_list = list(ppe.map(
+            batch_size = int(np.ceil(len(self.pauli_strings) / self.processes))
+            H_terms_list = list(self.pp.map(
                 partial(
-                    gen_from_pauli_string_batch,
+                    gen_from_pauli_string,
                     N=self.N,
                     particle_selection=self.particle_selection,
                     ordering=self.basis_ordering,
                     sparse=self.sparse
                 ),
-                pauli_string_batches
+                self.pauli_strings,
+                chunksize=batch_size
             ))
             self.H_terms = {}
-            for H_terms_element in H_terms_list:
-                self.H_terms.update(H_terms_element)
+            for pauli_string, H_term in zip(self.pauli_strings, H_terms_list):
+                self.H_terms[pauli_string] = H_term
 
     def optimize(
         self,
         cfi: CostFunctionInterface,
+        init_training_point: dict,
         max_condition: float = 1e10,
         svd_tolerance: float = 1e-8,
         sparse_proportion:  float = .20,
         degeneracy_truncation: int = 5,
-        init_vec: np.ndarray | None = None,
-        processes: int = 1
     ):
-        if processes > 1:
-            ppe = ProcessPoolExecutor(processes)
-
         # build terms if they are not already built
-        if(
-            type(self.H_terms) == type(None)
-        ):
+        if(type(self.H_terms) == type(None)):
             self.build_terms()
         
-        # list of indices into the training grid
-        chosen = []
-
-        # chosen cost for each iteration
+        # cost for each iteration
         iteration_costs = []
+        self.basis = np.zeros((self.size, 0), dtype=complex)
+        self.overlap = np.zeros((0, 0), dtype=complex)
 
-        # list of remaining indices into the training grid
-        not_chosen = list(range(len(self.training_grid)))
+        H_full = self._build_H_full(init_training_point)
+        if self.sparse:
+            evals, evecs = sps.linalg.eigsh(
+                H_full.real,
+                k=int(self.size*sparse_proportion),
+                which='SA'
+            )
+        else:
+            evals, evecs = sp.linalg.eigh(H_full)
 
-        # initial vector is not provided, so we choose from the training grid
-        if type(init_vec) == type(None):
-            H_full = self._build_H_full(0)
-            if self.sparse:
-                evals, evecs = sps.linalg.eigsh(
-                    H_full.real,
-                    k=int(self.size*sparse_proportion),
-                    which='SA'
-                )
-            else:
-                evals, evecs = sp.linalg.eigh(H_full)
-            init_vec = evecs[:, 0]
-            chosen.append(0)
-            not_chosen.remove(0)
+        init_vec = evecs[:, 0]
 
         basis_list = [init_vec]
-        basis = np.array(basis_list).T
-        overlap = (basis.conj().T @ basis).real
-        Hr_terms = {}
+        self.basis = np.array(basis_list).T
+        self.overlap = (self.basis.conj().T @ self.basis).real
+        self.Hr_terms = {}
         for pauli in self.H_terms.keys():
-            Hr_terms[pauli] = basis.conj().T @ self.H_terms[pauli] @ basis
-        cfi.preiteration(Hr_terms, basis, overlap)
-        iteration_costs.append(
-            cfi.cost_function(
-                Hr_terms,
-                basis,
-                overlap,
-                self.training_grid,
-                0
-            )
-        )
-
-        num_iterations = len(not_chosen)
-        for i in range(num_iterations):
-            overlap = (basis.conj().T @ basis).real
-
-            print(np.linalg.cond(overlap))
-            if(np.linalg.cond(overlap) > max_condition):
-                break
-
-            cfi.preiteration(Hr_terms, basis, overlap)
-
-            next_choice = None
-            costs = {}
-
-            Hr_terms = {}
-            for pauli in self.H_terms.keys():
-                Hr_terms[pauli] = basis.conj().T @ self.H_terms[pauli] @ basis
-            for j in not_chosen:
-                costs[j] = cfi.cost_function(
-                    Hr_terms, basis, overlap, self.training_grid, j
-                )
-            next_choice = cfi.cost_selector(costs)
-
-            if type(self.H_fulls) == type(None):
-                chosen_H_full = self._build_H_full(next_choice)
-
-            if self.sparse:
-                evals, evecs = sps.linalg.eigsh(
-                    chosen_H_full.real,
-                    k=int(self.size*sparse_proportion),
-                    which='SA'
-                )
-            else:
-                evals, evecs = sp.linalg.eigh(chosen_H_full)
-
-            # find degeneracy of the ground state
-            eps = 1e-10 # for comparing floating points of GSE
-            degeneracy = 0
-            for e in evals:
-                if e - evals[0] < eps:
-                    degeneracy += 1
-                else:
-                    break
-                if degeneracy >= degeneracy_truncation:
-                    break
-
-            basis_addition = evecs[:, 0:degeneracy]
-
-            # compress the basis
-            projection = basis_addition - basis @ sp.linalg.solve(
-                overlap, basis.conj().T @ basis_addition
+            self.Hr_terms[pauli] = (
+                self.basis.conj().T @ self.H_terms[pauli] @ self.basis
             )
 
-            U, sigmas, Vdagger = np.linalg.svd(projection)
-            compress_add = 0
-            for s in sigmas:
-                if s > svd_tolerance:
-                    compress_add += 1
-                else:
-                    break
+        # initial iteration preiteration
+        cfi.preiteration()
 
-            for j in range(compress_add):
-                basis_list += [U[:, j]]
+        init_cost = cfi.cost_function(init_training_point)
+        costs = np.array([[init_cost]])
+        training_points = np.array([init_training_point])
+        print(f"Training point: {init_training_point}")
+        print(f"Cost: {init_cost}")
 
-            basis_reduced = np.array(basis_list).T
-            if basis_reduced.shape[1] <= basis.shape[1]:
-                print(
-                    "Warning: Basis did not increase in size after compression."
-                )
+        # for constitency, this must be run as in some cases it changes the
+        # state of the cost function interface, even if we don't use the output
+        cfi.cost_selector(training_points, costs)
+
+        iteration_costs.append(costs)
+
+        for i in range(self.max_it):
+            if(np.linalg.cond(self.overlap) > max_condition):
+                print("Condition number is to large")
                 break
-            else:
-                basis = copy.copy(basis_reduced)
 
-            not_chosen.remove(next_choice)
-            chosen.append(next_choice)
-            iteration_costs.append(costs[next_choice])
+            cfi.preiteration()
+
+            training_points = cfi.gen_training_points()
+            if len(training_points) == 0:
+                # no more training points
+                print("No more training points")
+                break
+
+            print(f"Generated {len(training_points)} training points")
+
+            if self.processes == 1:
+                costs = np.zeros(len(training_points), dtype=float)
+                for j, training_point in enumerate(training_points):
+                    costs[j] = cfi.cost_function(training_point)
+            else:
+                batch_size = int(np.ceil(len(training_points) / self.processes))
+                costs = np.array(list(self.pp.map(
+                    cfi.cost_function,
+                    training_points,
+                    chunksize = batch_size
+                )))
+
+            training_point_idxs = cfi.cost_selector(training_points, costs)
+            next_training_points = training_points[training_point_idxs]
+            basis_addition = None
+
+            if len(next_training_points) == 0:
+                print("No viable training points found")
+            else:
+                for training_point in next_training_points:
+                    H_full = self._build_H_full(training_point)
+
+                    if self.sparse:
+                        evals, evecs = sps.linalg.eigsh(
+                            H_full.real,
+                            k=int(self.size*sparse_proportion),
+                            which='SA'
+                        )
+                    else:
+                        evals, evecs = sp.linalg.eigh(H_full)
+
+                    # find degeneracy of the ground state
+                    eps = 1e-10 # for comparing floating points of GSE
+                    degeneracy = 0
+                    for e in evals:
+                        if e - evals[0] < eps:
+                            degeneracy += 1
+                        else:
+                            break
+                        if degeneracy >= degeneracy_truncation:
+                            break
+
+                    if type(basis_addition) == type(None):
+                        basis_addition = evecs[:, 0:degeneracy]
+                    else:
+                        basis_addition = np.append(
+                            basis_addition,
+                            evecs[:, 0:degeneracy],
+                            axis = 1
+                        )
+
+                    if type(basis_addition) == type(None):
+                        raise Exception("Failed to create any basis addition")
+
+                # compress the basis
+                projection = basis_addition - self.basis @ sp.linalg.solve(
+                    self.overlap, self.basis.conj().T @ basis_addition
+                )
+
+                U, sigmas, Vdagger = np.linalg.svd(projection)
+                compress_add = 0
+                for s in sigmas:
+                    if s > svd_tolerance:
+                        compress_add += 1
+                    else:
+                        break
+
+                for j in range(compress_add):
+                    basis_list += [U[:, j]]
+
+                basis_reduced = np.array(basis_list).T
+                if basis_reduced.shape[1] <= self.basis.shape[1]:
+                    print(
+                        "Warning: Basis did not increase in size after "
+                        + "compression."
+                    )
+                else:
+                    self.basis = copy.copy(basis_reduced)
+
+                self.overlap = (self.basis.conj().T @ self.basis).real
+                self.Hr_terms = {}
+                for pauli in self.H_terms.keys():
+                    self.Hr_terms[pauli] = (
+                        self.basis.conj().T @ self.H_terms[pauli] @ self.basis
+                    )
+
+            iteration_costs.append(costs[training_point_idxs])
+            print(f"Training point: {next_training_points}")
+            print(f"Cost: {iteration_costs[-1]}")
 
             if cfi.check_termination(iteration_costs):
+                print("Termination condition met")
                 break
 
-        self.opt_basis = basis
-        self.overlap = basis.conj().T @ basis
-        self.reduced_terms = None
+        self.opt_basis = self.basis
+        self.opt_overlap = self.basis.conj().T @ self.basis
+        self.opt_Hr_terms = self.Hr_terms
 
         return self.opt_basis
 
@@ -340,14 +320,14 @@ class SurrogateModel:
         """
         if (
             type(self.opt_basis) == type(None)
-            or type(self.overlap) == type(None)
+            or type(self.opt_overlap) == type(None)
         ):
             self.optimize()
 
-        if type(self.reduced_terms) == type(None):
-            self.reduced_terms = {}
+        if type(self.opt_Hr_terms) == type(None):
+            self.opt_Hr_terms = {}
             for pauli in self.H_terms.keys():
-                self.reduced_terms[pauli] = (
+                self.opt_Hr_terms[pauli] = (
                     self.opt_basis.conj().T @ self.H_terms[pauli] @ self.opt_basis
                 )
 
@@ -356,24 +336,24 @@ class SurrogateModel:
             dtype=complex
         )
 
-        for pauli in self.reduced_terms.keys():
-            Hr += parameters[pauli] * self.reduced_terms[pauli]
+        for pauli in self.opt_Hr_terms.keys():
+            Hr += parameters[pauli] * self.opt_Hr_terms[pauli]
 
-        evals, evecs = sp.linalg.eigh(Hr, self.overlap)
+        evals, evecs = sp.linalg.eigh(Hr, self.opt_overlap)
 
         return evals, evecs
 
     def _build_H_full(
         self,
-        parameter_idx: int
+        training_point: dict,
     ) -> np.ndarray:
         """
-        Builds the full Hamiltonian for a given paremeter index
+        Builds the full Hamiltonian for a given training point
 
         Parameters
         ----------
-        parameter_idx : `int`
-            the parameter index to build the full Hamiltonian for
+        training_point : `dict`
+            the training point to build the full Hamiltonian for
 
         Returns
         -------
@@ -384,7 +364,7 @@ class SurrogateModel:
         H_full = np.zeros((self.size, self.size), dtype=complex)
         for pauli in self.pauli_strings:
             H_full += (
-                self.training_grid[parameter_idx][pauli] * self.H_terms[pauli]
+                training_point[pauli] * self.H_terms[pauli]
             )
 
         return H_full

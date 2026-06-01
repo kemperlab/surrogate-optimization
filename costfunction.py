@@ -1,52 +1,41 @@
 import abc
+import numpy as np
 
 from typing import TypeVar, Generic
 
 T = TypeVar('T')
+M = TypeVar('Model')
 
-class CostFunctionInterface(Generic[T], abc.ABC):
-    @classmethod
-    def __subclasshook__(cls, subclass):
-        return (
-            hasattr(subclass, 'preiteration') and
-            callable(subclass, subclass.preiteration) and
-            hasattr(subclass, 'cost_function') and
-            callable(subclass, subclass.cost_function) and
-            hasattr(subclass, 'cost_selector') and
-            callable(subclass, subclass.cost_selector) or
-            NotImplement
-        )
-
+class CostFunctionInterface(Generic[T, M], abc.ABC):
     @abc.abstractmethod
-    def preiteration(
-        self,
-        Hr_terms,
-        basis,
-        overlap
-    ):
+    def preiteration(self):
         """
         Method to run prior to each iteration.
         """
-        raise NotImplementedError
+        pass
+    
+    @abc.abstractmethod
+    def gen_training_points(self) -> np.ndarray:
+        """
+        List of training points which are options to be used
+        """
+        pass
 
     @abc.abstractmethod
     def cost_function(
         self,
-        Hr_terms,
-        basis,
-        overlap,
-        training_grid,
-        grid_index
+        training_point: dict
     ) -> T:
         """
         Returns the cost of a training point
         """
-        raise NotImplementedError
+        pass
 
     @abc.abstractmethod
     def cost_selector(
         self,
-        costs: dict[int, T]
+        training_points: np.ndarray,
+        costs: np.ndarray
     ) -> int:
         """
         Selects a training point from a dictionary with corresponding costs
@@ -61,7 +50,7 @@ class CostFunctionInterface(Generic[T], abc.ABC):
         selected : `int`
             the index of the selected training point
         """
-        raise NotImplementedError
+        pass
 
     @abc.abstractmethod
     def check_termination(
@@ -82,3 +71,4 @@ class CostFunctionInterface(Generic[T], abc.ABC):
             whether or not to terminate
         """
         pass
+

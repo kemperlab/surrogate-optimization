@@ -372,6 +372,7 @@ class SurrogateModel:
         overlap: np.ndarray = None,
         Hr_terms: list[np.ndarray] = None,
         H2r_terms: list[np.ndarray] = None,
+        eigen_shift: float = 0,
         degeneracy_truncation: float = None
     ):
         """
@@ -405,7 +406,10 @@ class SurrogateModel:
         for pauli2 in H2r_terms.keys():
             H2r += self.training_grid2[j][pauli2] * H2r_terms[pauli2]
 
-        evals, evecs = sp.linalg.eigh(Hr, overlap)
+        evals, evecs = sp.linalg.eigh(
+            Hr + eigen_shift * np.eye(basis.shape[1]),
+            overlap
+        )
 
         # find degeneracy of the ground state
         degeneracy = 0
@@ -440,6 +444,8 @@ class SurrogateModel:
         degeneracy_truncation: int = 5,
         save: bool = False,
         residue_graphing: bool = False,
+        eigen_shift: float = 0,
+        sparse_proportion: float = .25,
         processes=1
     ):
         """
@@ -517,7 +523,11 @@ class SurrogateModel:
             else:
                 H_full = self.H_fulls[0]
             if self.sparse:
-                evals, evecs = sps.linalg.eigsh(H_full.real, k=50, which='SA')
+                evals, evecs = sps.linalg.eigsh(
+                    H_full.real,
+                    k=int(self.size*sparse_proportion),
+                    which='SA'
+                )
             else:
                 evals, evecs = sp.linalg.eigh(H_full)
             init_vec = evecs[:, 0]
@@ -564,6 +574,7 @@ class SurrogateModel:
                         overlap,
                         Hr_terms,
                         H2r_terms,
+                        eigen_shift,
                         degeneracy_truncation
                     ))
             else:
@@ -608,7 +619,11 @@ class SurrogateModel:
                 chosen_H_full = self.H_fulls[next_choice]
 
             if self.sparse:
-                evals, evecs = sps.linalg.eigsh(chosen_H_full.real, k=50, which='SA' )
+                evals, evecs = sps.linalg.eigsh(
+                    chosen_H_full.real,
+                    k=int(self.size*sparse_proportion),
+                    which='SA'
+                )
             else:
                 evals, evecs = sp.linalg.eigh(chosen_H_full)
 

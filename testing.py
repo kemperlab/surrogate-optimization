@@ -11,6 +11,13 @@ if __name__ == "__main__":
     # For removing linear dependence in basis vectors
     svd_tol = 1e-8
 
+    # eigenvalue shift
+    eigen_shift = 0
+
+    # proportion of the Hilbert space size to look for eigenvalues in during
+    # sparse computations
+    sparse_proportion = .25
+
     # Number of sites (total for TFIM/TFXY/Heisenberg, per spin for fermi_hubbard, AIM)
     N = 4
 
@@ -160,7 +167,11 @@ if __name__ == "__main__":
             for pauli in model.H_terms.keys():
                 H_full += parameters[pauli] * model.H_terms[pauli]
             if model.sparse:
-                evals, evecs = sps.linalg.eigsh(H_full.real, k=50, which='SA')
+                evals, evecs = sps.linalg.eigsh(
+                    H_full.real,
+                    k=int(sparse_proportion*model.size),
+                    which='SA'
+                )
             else:
                 evals, evecs = np.linalg.eigh(H_full)
             solution_grid[i, j] = evals[0]
@@ -173,19 +184,11 @@ if __name__ == "__main__":
         svd_tolerance=svd_tol,
         residue_threshold=res_thresh,
         residue_graphing=True,
+        eigen_shift=eigen_shift,
+        sparse_proportion=sparse_proportion,
         processes=1
     )
     print("Basis Size", basis.shape[1])
-
-    for i in range(basis.shape[1]):
-        bv = basis[:, i]
-        print(f"Basis vector {i}")
-        occ = 0.0
-        for j in range(2*N):
-            for k in range(2**(2*N)):
-                if(k & (0x1 << j)):
-                    occ += bv[k] * bv[k].conj()
-        print(f"occ = {occ}")
 
     ### Testing the surrogate model against random parameters
     errors = []
@@ -281,7 +284,11 @@ if __name__ == "__main__":
             H_full += parameters[pauli] * model.H_terms[pauli]
 
         if model.sparse:
-            evals, evecs = sps.linalg.eigsh(H_full.real, k=50, which='SA')
+            evals, evecs = sps.linalg.eigsh(
+                H_full.real,
+                k=int(sparse_proportion*model.size),
+                which='SA'
+            )
         else:
             evals, evecs = np.linalg.eigh(H_full)
 

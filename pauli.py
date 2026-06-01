@@ -198,8 +198,8 @@ def parse_openfermion_term(
     return pauli_strings
 
 def gen_from_pauli_string(
-    N: int,
     pauli_string: str,
+    N: int,
     particle_selection: tuple[int, int] | int = None,
     ordering="uudd",
     sparse=False,
@@ -232,25 +232,6 @@ def gen_from_pauli_string(
                 basis = get_ps_basis(particle_selection, N, ordering=ordering)
                 mat = mat[:, basis][basis]
             return mat
-
-def gen_from_pauli_string_batch(
-    pauli_strings: list[str]=None,
-    N: int=None,
-    particle_selection: tuple[int, int] | int = None,
-    ordering="uudd",
-    sparse=False
-):
-    H_terms = {}
-    for pauli in pauli_strings:
-        H_terms[pauli] = gen_from_pauli_string(
-            N,
-            pauli,
-            particle_selection,
-            ordering,
-            sparse
-        )
-    return H_terms
-
 
 def model_to_paulis(
     N: int, model: str, model_parameters: dict
@@ -362,3 +343,29 @@ def model_to_paulis(
 
     else:
         raise ValueError(f"Model '{model}' not recognized.")
+
+def param_to_paulis(
+    theta: tuple,
+    params: tuple[str],
+    model: str,
+    N: int
+) -> dict[str, float]:
+    """
+    Convert a parameter point to the coefficients of Pauli matrices
+
+    Parameter
+    ---------
+    theta : `tuple`
+        A parameter point in the training grid
+    params : `tuple[str]`
+        The parameters being referenced
+    model : `str`
+        The model thats being used
+    N: number of particles
+    """
+    paulis = model_to_paulis(N, model, {
+        label : theta_i for label, theta_i in zip(params, theta)
+    })
+
+    return{p: c for p, c in paulis}
+

@@ -17,22 +17,22 @@ if __name__ == "__main__":
     max_condition = 1e9
 
     # For removing linear dependence in basis vectors
-    svd_tol = 1e-8
+    svd_tol = 1e-12
 
     # max number of states to include in degenerate ground states
     degeneracy_truncation = 5
 
     # proportion of the Hilbert space size to look for eigenvalues in during
     # sparse computations
-    sparse_proportion = .25
+    sparse_proportion = .5
 
     # Number of sites (total for TFIM/TFXY/Heisenberg, per spin for fermi_hubbard, AIM)
-    N = 8
+    N = 4
 
     # None or Between 0 and N (2*N for AIM, fermi_hubbard), N for
     # TFIM/TFXY/Heisenberg. Can be tuple for (n_up, n_down) for AIM,
     # fermi_hubbard
-    ps = 4
+    ps = None
 
     # AIM = Single Impurity Anderson Model, fermi_hubbard, TFIM, TFXY,
     # heisenberg
@@ -94,6 +94,8 @@ if __name__ == "__main__":
         }
 
     model_paulis = model_to_paulis(N, model_type, model_parameters)
+    model_params = list(model_parameters.keys())
+    model_params.remove("periodic")
     H_paulis = [t[0] for t in model_paulis]
     H_paulis_order = {}
 
@@ -102,7 +104,7 @@ if __name__ == "__main__":
 
     ### Any training grid can be used here, this is an example of the model
     # being parameterized over two parameters
-    training_grid = []
+    training_grid = np.array([])
     for m1 in mu:
         for m2 in mu_2:
             if model_type == "TFIM":
@@ -144,7 +146,7 @@ if __name__ == "__main__":
             paulis_dict = {}
             for t in model_paulis:
                 paulis_dict[t[0]] = t[1]
-            training_grid.append(paulis_dict)
+            training_grid = np.append(training_grid, paulis_dict)
 
     if model_type == "AIM" or model_type == "fermi_hubbard":
         surrogate_N = 2 * N
@@ -154,15 +156,16 @@ if __name__ == "__main__":
         surrogate_ord = "uudd"
     model = SurrogateModel(
         model_type,
+        model_params,
         surrogate_N,
         H_paulis,
-        training_grid,
         particle_selection=ps,
         basis_ordering=surrogate_ord,
-        sparse=True
+        sparse=True,
+        processes=4
     )
 
-    model.build_terms(processes=1)
+    model.build_terms()
     print("Done building terms")
 
     # Calculate the real solutions for testing (only for 2D parameter grids)
@@ -184,9 +187,10 @@ if __name__ == "__main__":
             solution_grid[i, j] = evals[0]
 
     basis = model.optimize(
-        #EnergyConvergenceCostFunction(1e-8),
-        VarianceCostFunction(model.H_terms, model.training_grid, 1e-8),
-        #ResidualCostFunction(model.H_terms),
+        #EnergyConvergenceCostFunction(model, training_grid, 1e-8),
+        VarianceCostFunction(model, training_grid, 1e-8),
+        #ResidualCostFunction(model, (-5.0, -5.0), [(-5.0, 5.0), (-5.0, 5.0)], 1000, 10),
+        init_training_point=training_grid[0],
         max_condition=max_condition,
         svd_tolerance=svd_tol,
         sparse_proportion=sparse_proportion,
