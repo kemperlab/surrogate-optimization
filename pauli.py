@@ -12,7 +12,6 @@ from openfermion import (
 from openfermion.linalg import get_sparse_operator
 import scipy.sparse as sps
 
-
 class Pauli:
     I = np.array([
         [1, 0],

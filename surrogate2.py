@@ -85,6 +85,7 @@ class SurrogateModel:
         self.basis_list = None
         self.basis = None
         self.Hr_terms = None
+        self.iteration_costs = None
         
         if type(self.particle_selection) == type(None):
             self.size = 2**N
@@ -174,7 +175,6 @@ class SurrogateModel:
             self.build_terms()
         
         # cost for each iteration
-        self.iteration_costs = []
         self.basis = np.zeros((self.size, 0), dtype=complex)
         self.overlap = np.zeros((0, 0), dtype=complex)
 
@@ -193,11 +193,7 @@ class SurrogateModel:
         self.basis_list = [init_vec]
         self.basis = np.array(self.basis_list).T
         self.overlap = (self.basis.conj().T @ self.basis).real
-        self.Hr_terms = {}
-        for pauli in self.H_terms.keys():
-            self.Hr_terms[pauli] = (
-                self.basis.conj().T @ self.H_terms[pauli] @ self.basis
-            )
+        self.make_Hr_terms()
 
         # initial iteration preiteration
         cfi.preiteration()
@@ -210,26 +206,29 @@ class SurrogateModel:
         # state of the cost function interface, even if we don't use the output
         cfi.cost_selector(training_points, costs)
 
-        self.iteration_costs.append(costs)
-
         self.log(f"Training point: {init_training_point}\n")
         self.log(f"Cost: {init_cost}\n")
+
+        return costs
 
     def optimize(
         self,
         cfi: CostFunctionInterface,
         init_param_point: dict,
     ):
+        self.iteration_costs = []
+
         if type(self.basis) == type(None):
             # no basis yet, we need to initialize
-            self.init_optimize(
+            costs = self.init_optimize(
                 cfi,
                 init_param_point,
             )
+            self.iteration_costs.append(costs)
 
         for i in range(self.max_it):
             if(np.linalg.cond(self.overlap) > self.max_condition):
-                self.log("Condition number is to large")
+                self.log("Condition number is to large\n")
                 break
 
             cfi.preiteration()
@@ -237,10 +236,10 @@ class SurrogateModel:
             training_points = cfi.gen_training_points()
             if len(training_points) == 0:
                 # no more training points
-                self.log("No more training points")
+                self.log("No more training points\n")
                 break
 
-            self.log(f"Generated {len(training_points)} training points")
+            self.log(f"Generated {len(training_points)} training points\n")
 
             if self.processes == 1:
                 costs = np.zeros(len(training_points), dtype=float)
@@ -259,7 +258,7 @@ class SurrogateModel:
             next_costs = costs[training_point_idxs]
 
             if len(next_training_points) == 0:
-                self.log("No viable training points found")
+                self.log("No viable training points found\n")
                 # no training points found, no point in continuing
                 break
             else:
@@ -269,16 +268,15 @@ class SurrogateModel:
                 )
 
                 self.compress_basis(basis_addition)
+                self.make_Hr_terms()
 
             self.iteration_costs.append(next_costs)
 
             if cfi.check_termination(self.iteration_costs):
-                self.log("Termination condition met")
+                self.log("Termination condition met\n")
                 break
 
-        self.opt_basis = self.basis
-        self.opt_overlap = self.basis.conj().T @ self.basis
-        self.opt_Hr_terms = self.Hr_terms
+        self.set_optimal()
 
         return self.opt_basis
 
@@ -425,17 +423,25 @@ class SurrogateModel:
         if basis_reduced.shape[1] <= self.basis.shape[1]:
             self.log(
                 "Warning: Basis did not increase in size after "
-                + "compression."
+                + "compression.\n"
             )
         else:
             self.basis = copy.copy(basis_reduced)
 
         self.overlap = (self.basis.conj().T @ self.basis).real
+
+    def make_Hr_terms(self):
         self.Hr_terms = {}
         for pauli in self.H_terms.keys():
             self.Hr_terms[pauli] = (
                 self.basis.conj().T @ self.H_terms[pauli] @ self.basis
             )
+
+    def set_optimal(self):
+        self.opt_basis = self.basis
+        self.opt_overlap = self.basis.conj().T @ self.basis
+        self.make_Hr_terms()
+        self.opt_Hr_terms = self.Hr_terms
 
     def log(
         self,
