@@ -369,3 +369,120 @@ def param_to_paulis(
 
     return{p: c for p, c in paulis}
 
+def get_model_paulis(model_type, N):
+    if model_type == "TFIM":
+        model_parameters = {
+            "J": 1,
+            "h": 1,
+            "periodic": False,
+        }
+    elif model_type == "TFXY":
+        model_parameters = {
+            "Jx": 1,
+            "Jy": 1,
+            "h": 1,
+            "periodic": False,
+        }
+    elif model_type == "heisenberg":
+        model_parameters = {
+            "Jx": 1,
+            "Jy": 1,
+            "Jz": 1,
+            "h": 1,
+            "periodic": False,
+        }
+    elif model_type == "fermi_hubbard":
+        mu_chem = 0.5
+        model_parameters = {
+            "t": 1.0,
+            "mu": 1.0,
+            "U": 1.0,
+            "periodic": False,
+        }
+    elif model_type == "AIM":
+        U = 4.0
+        NI = 1
+        NB = N - NI
+        model_parameters = {
+            "NI": NI,
+            "NB": NB,
+            "U": U,
+            "ei": [0.0] * NI,
+            "vb": np.array([0.01] * ((NB) % 2) + [1.0] * (NB - (NB) % 2)),
+            "eb": np.array(
+                [0.0] * ((NB) % 2)
+                + [1.0] * ((NB - (NB) % 2) // 2)
+                + [-1.0] * ((NB - (NB) % 2) // 2)
+            ),
+            "mu": U / 2,
+            "periodic": False,
+        }
+
+    model_paulis = model_to_paulis(N, model_type, model_parameters)
+    H_paulis = [t[0] for t in model_paulis]
+
+    return H_paulis
+
+def get_model_base_parameters(model_type):
+    if model_type == "TFIM":
+        model_parameters = {
+            "J": 1,
+            "h": 1,
+            "periodic": False,
+        }
+    elif model_type == "TFXY":
+        model_parameters = {
+            "Jx": 1,
+            "Jy": 1,
+            "h": 1,
+            "periodic": False,
+        }
+    elif model_type == "heisenberg":
+        model_parameters = {
+            "Jx": 1,
+            "Jy": 1,
+            "Jz": 1,
+            "h": 1,
+            "periodic": False,
+        }
+    elif model_type == "fermi_hubbard":
+        model_parameters = {
+            "t": 1.0,
+            "mu": 1.0,
+            "U": 1.0,
+            "periodic": False,
+        }
+    elif model_type == "AIM":
+        U = 4.0
+        NI = 1
+        NB = N - NI
+        model_parameters = {
+            "NI": NI,
+            "NB": NB,
+            "U": U,
+            "ei": [0.0] * NI,
+            "vb": np.array([0.01] * ((NB) % 2) + [1.0] * (NB - (NB) % 2)),
+            "eb": np.array(
+                [0.0] * ((NB) % 2)
+                + [1.0] * ((NB - (NB) % 2) // 2)
+                + [-1.0] * ((NB - (NB) % 2) // 2)
+            ),
+            "mu": U / 2,
+            "periodic": False,
+        }
+
+    return model_parameters
+
+def get_model_parameters(model_type):
+    if model_type == "TFIM":
+        model_parameters = ("J", "h")
+    elif model_type == "TFXY":
+        model_parameters = ("Jx", "Jy", "h")
+    elif model_type == "heisenberg":
+        model_parameters = ("Jx", "Jy", "Jz", "h")
+    elif model_type == "fermi_hubbard":
+        model_parameters = ("t", "mu", "U")
+    elif model_type == "AIM":
+        model_parameters = ("NI", "NB", "U", "ei", "vb", "eb", "mu")
+
+    return model_parameters

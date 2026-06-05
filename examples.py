@@ -66,7 +66,7 @@ class EnergyConvergenceCostFunction(
         self,
         training_points: np.ndarray,
         costs: np.ndarray
-    ) -> dict:
+    ) -> dict | None:
         min_cost_idx = np.argmin(costs)
         training_point = training_points[min_cost_idx]
         for i, t in enumerate(self.training_grid[self.not_chosen]):
@@ -74,7 +74,7 @@ class EnergyConvergenceCostFunction(
                 self.not_chosen.remove(self.not_chosen[i])
                 return [min_cost_idx]
         
-        raise Exception("Invalid training point selected")
+        return None
 
     def check_termination(
         self,
@@ -192,7 +192,7 @@ class VarianceCostFunction(CostFunctionInterface[float]):
                 @ evecs[:, k]
             )
 
-        return res2
+        return float(res2.real)
 
     def cost_selector(
         self,
@@ -206,7 +206,7 @@ class VarianceCostFunction(CostFunctionInterface[float]):
                 self.not_chosen.remove(self.not_chosen[i])
                 return [max_cost_idx]
         
-        raise Exception("Invalid training point selected")
+        return None
 
     def check_termination(
         self,
@@ -261,7 +261,7 @@ class ResidualCostFunction(CostFunctionInterface[float]):
             training_points.append(
                 param_to_paulis(
                     point,
-                    self.model.model_params,
+                    self.model.params,
                     self.model.model_name,
                     self.model.N
                 )

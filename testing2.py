@@ -41,62 +41,15 @@ if __name__ == "__main__":
     # Parameter grid values for training grid
     mu = np.linspace(-5.0, 5.0, 20)
     mu_2 = np.linspace(-5.0, 5.0, 20)
+    mu_chem = 0.5
 
     if model_type == "fermi_hubbard":
         mu_2 = np.linspace(1.0, 5.0, 20)
 
-    if model_type == "TFIM":
-        model_parameters = {
-            "J": 1,
-            "h": 1,
-            "periodic": False,
-        }
-    elif model_type == "TFXY":
-        model_parameters = {
-            "Jx": 1,
-            "Jy": 1,
-            "h": 1,
-            "periodic": False,
-        }
-    elif model_type == "heisenberg":
-        model_parameters = {
-            "Jx": 1,
-            "Jy": 1,
-            "Jz": 1,
-            "h": 1,
-            "periodic": False,
-        }
-    elif model_type == "fermi_hubbard":
-        mu_chem = 0.5
-        model_parameters = {
-            "t": 1.0,
-            "mu": 1.0,
-            "U": 1.0,
-            "periodic": False,
-        }
-    elif model_type == "AIM":
-        U = 4.0
-        NI = 1
-        NB = N - NI
-        model_parameters = {
-            "NI": NI,
-            "NB": NB,
-            "U": U,
-            "ei": [0.0] * NI,
-            "vb": np.array([0.01] * ((NB) % 2) + [1.0] * (NB - (NB) % 2)),
-            "eb": np.array(
-                [0.0] * ((NB) % 2)
-                + [1.0] * ((NB - (NB) % 2) // 2)
-                + [-1.0] * ((NB - (NB) % 2) // 2)
-            ),
-            "mu": U / 2,
-            "periodic": False,
-        }
+    H_paulis = get_model_paulis(model_type, N)
 
-    model_paulis = model_to_paulis(N, model_type, model_parameters)
-    model_params = list(model_parameters.keys())
-    model_params.remove("periodic")
-    H_paulis = [t[0] for t in model_paulis]
+    model_params = get_model_parameters(model_type)
+    model_parameters = get_model_base_parameters(model_type)
     H_paulis_order = {}
 
     for i, pauli in enumerate(H_paulis):
@@ -158,10 +111,13 @@ if __name__ == "__main__":
         model_type,
         model_params,
         surrogate_N,
-        H_paulis,
         particle_selection=ps,
         basis_ordering=surrogate_ord,
         sparse=True,
+        max_condition=max_condition,
+        svd_tolerance=svd_tol,
+        sparse_proportion=sparse_proportion,
+        degeneracy_truncation=degeneracy_truncation,
         processes=4
     )
 
@@ -190,11 +146,7 @@ if __name__ == "__main__":
         #EnergyConvergenceCostFunction(model, training_grid, 1e-8),
         VarianceCostFunction(model, training_grid, 1e-8),
         #ResidualCostFunction(model, (-5.0, -5.0), [(-5.0, 5.0), (-5.0, 5.0)], 1000, 10),
-        init_training_point=training_grid[0],
-        max_condition=max_condition,
-        svd_tolerance=svd_tol,
-        sparse_proportion=sparse_proportion,
-        degeneracy_truncation=degeneracy_truncation
+        (-5.0, -5.0)
     )
     print("Basis Size", basis.shape[1])
 
