@@ -15,6 +15,7 @@ class SurrogateModel:
     # Model Parameters
     name: str
     params: list[str]
+    selected_params: tuple[str]
     N: int
     pauli_strings: list[str]
     particle_selection: tuple[int, int] | int | None
@@ -46,7 +47,7 @@ class SurrogateModel:
     def __init__(
         self,
         name: str,
-        params: list[str],
+        selected_params: tuple[str],
         N: int,
         particle_selection: tuple[int, int] | int | None = None,
         basis_ordering: str = "uudd",
@@ -61,9 +62,11 @@ class SurrogateModel:
         error_stream: io.IOBase = sys.stderr,
     ):
         self.name = name
-        self.params = params
-        self.N = N
-        self.pauli_strings = get_model_paulis(self.name, self.N)
+        self.params = get_model_parameters(self.name)
+        self.selected_params = selected_params
+        self.N_spin = N
+        self.N = get_model_N(self.name, N)
+        self.pauli_strings = get_model_paulis(self.name, self.N_spin)
         self.particle_selection = particle_selection
         self.basis_ordering = basis_ordering
         self.sparse = sparse
@@ -88,13 +91,13 @@ class SurrogateModel:
         self.iteration_costs = None
         
         if type(self.particle_selection) == type(None):
-            self.size = 2**N
+            self.size = 2**self.N
         elif type(self.particle_selection) == int:
-            self.size = comb(N, self.particle_selection)
+            self.size = comb(self.N, self.particle_selection)
         elif type(self.particle_selection) == tuple:
             self.size = (
-                comb(N // 2, self.particle_selection[0])
-                * comb(N // 2, self.particle_selection[1])
+                comb(self.N // 2, self.particle_selection[0])
+                * comb(self.N // 2, self.particle_selection[1])
             )
         else:
             raise Exception(
@@ -162,14 +165,10 @@ class SurrogateModel:
     def init_optimize(
         self,
         cfi: CostFunctionInterface,
-        init_param_point: tuple
+        init_theta: tuple
     ):
-        init_training_point = param_to_paulis(
-            init_param_point,
-            self.params,
-            self.name,
-            self.N
-        )
+        init_training_point = self.theta_to_training_point(init_theta)
+
         # build terms if they are not already built
         if(type(self.H_terms) == type(None)):
             self.build_terms()
@@ -260,7 +259,7 @@ class SurrogateModel:
             if len(next_training_points) == 0:
                 self.log("No viable training points found\n")
                 # no training points found, no point in continuing
-                break
+                # break
             else:
                 basis_addition = self.find_basis_addition(
                     next_costs,
@@ -436,6 +435,25 @@ class SurrogateModel:
             self.Hr_terms[pauli] = (
                 self.basis.conj().T @ self.H_terms[pauli] @ self.basis
             )
+
+    def theta_to_training_point(
+        self,
+        theta
+    ):
+        param = theta_to_param(
+            theta,
+            self.selected_params,
+            self.name,
+            self.N_spin
+        )
+        training_point = param_to_paulis(
+            param,
+            self.params,
+            self.name,
+            self.N_spin
+        )
+
+        return training_point
 
     def set_optimal(self):
         self.opt_basis = self.basis

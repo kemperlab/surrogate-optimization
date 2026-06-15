@@ -40,9 +40,9 @@ class GaussianProcess(abc.ABC):
 class SklearnGP(GaussianProcess):
     def __init__(self) -> None:
         kernel = (
-            ConstantKernel(1.0, (1e-5, 1e5))
-            * RBF(length_scale=1.0, length_scale_bounds=(1e-3, 1e3))
-            + WhiteKernel(noise_level = 1e-5, noise_level_bounds=(1e-12, 1e2))
+            ConstantKernel(1.0, (1e-30, 1e3))
+            * RBF(length_scale=1.0, length_scale_bounds=(1e-30, 1e3))
+            + WhiteKernel(noise_level = 1e-5, noise_level_bounds=(1e-30, 1e2))
         )
 
         self._gp = GaussianProcessRegressor(

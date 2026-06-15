@@ -312,12 +312,12 @@ def model_to_paulis(
         one_body = np.zeros((N, N))
         two_body = np.zeros((N, N, N, N))
 
-        NI = model_parameters.get("NI", 1)
+        NI = int(model_parameters.get("NI", 1))
         NB = N - NI
         ei = model_parameters.get("ei", [0.0] * NI)
         ebs = model_parameters.get("eb", np.linspace(0.1, 2, NB))
         vbs = model_parameters.get("vb", np.linspace(0.1, 2, NB))
-        U = model_parameters.get("U", 1.0)
+        U = model_parameters.get("U", 4.0)
         mu = model_parameters.get("mu", U / 2)
 
         for i in range(NI):
@@ -391,7 +391,6 @@ def get_model_paulis(model_type, N):
             "periodic": False,
         }
     elif model_type == "fermi_hubbard":
-        mu_chem = 0.5
         model_parameters = {
             "t": 1.0,
             "mu": 1.0,
@@ -422,7 +421,7 @@ def get_model_paulis(model_type, N):
 
     return H_paulis
 
-def get_model_base_parameters(model_type):
+def get_model_base_parameters(model_type, N):
     if model_type == "TFIM":
         model_parameters = {
             "J": 1,
@@ -485,3 +484,97 @@ def get_model_parameters(model_type):
         model_parameters = ("NI", "NB", "U", "ei", "vb", "eb", "mu")
 
     return model_parameters
+
+def get_model_N(model_type, N):
+    if model_type == "fermi_hubbard" or model_type == "AIM":
+        return 2 * N
+    else:
+        return N
+
+def theta_to_param(theta, selected_params, model_type, N):
+    if model_type == "TFIM":
+        param = []
+        if "J" in selected_params:
+            idx = selected_params.index("J")
+            param.append(theta[idx])
+        else:
+            param.append(1.0)
+
+        if "h" in selected_params:
+            idx = selected_params.index("h")
+            param.append(theta[idx])
+        else:
+            param.append(1.0)
+
+        return tuple(param)
+
+    elif model_type == "TFXY":
+        param = []
+        if "Jx" in selected_params:
+            idx = selected_params.index("Jx")
+            param.append(theta[idx])
+        else:
+            param.append(1.0)
+
+        if "Jy" in selected_params:
+            idx = selected_params.index("Jy")
+            param.append(theta[idx])
+        else:
+            param.append(1.0)
+
+        if "h" in selected_params:
+            idx = selected_params.index("h")
+            param.append(theta[idx])
+        else:
+            param.append(1.0)
+
+        return tuple(param)
+
+    elif model_type == "AIM":
+        NI = 1
+        NB = N - NI
+        param = [NI, NB]
+
+        if "U" in selected_params:
+            idx = selected_params.index("U")
+            param.append(theta[idx])
+        else:
+            param.append(4.0)
+
+        if "ei" in selected_params:
+            idx = selected_params.index("ei")
+            param.append([theta[idx]] * NI)
+        else:
+            param.append([0.0] * NI)
+
+        if "vb" in selected_params:
+            idx = selected_params.index("vb")
+            param.append(
+                np.array([0.01] * ((NB) % 2) + [theta[idx]] * (NB - (NB) % 2))
+            )
+        else:
+            param.append(
+                np.array([0.01] * ((NB) % 2) + [1.0] * (NB - (NB) % 2))
+            )
+        
+        if "eb" in selected_params:
+            idx = selected_params.index("eb")
+            param.append(np.array(
+                [0.0] * ((NB) % 2)
+                + [theta[idx]] * ((NB - (NB) % 2) // 2)
+                + [-theta[idx]] * ((NB - (NB) % 2) // 2)
+            ))
+        else:
+            param.append(np.array(
+                [0.0] * ((NB) % 2)
+                + [1.0] * ((NB - (NB) % 2) // 2)
+                + [-1.0] * ((NB - (NB) % 2) // 2)
+            ))
+
+        if "mu" in selected_params:
+            idx = selected_params.index("mu")
+            param.append(theta[idx])
+        else:
+            param.append(param[2] / 2)
+
+        return tuple(param)

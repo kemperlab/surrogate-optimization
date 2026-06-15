@@ -8,6 +8,10 @@ from surrogate2 import *
 
 if __name__ == "__main__":
     ###############################################################
+    # AIM = Single Impurity Anderson Model, fermi_hubbard, TFIM, TFXY,
+    # heisenberg
+    model_type = "TFIM"
+
     # Residue threshold for terminating optimization (lower means more accurate,
     # at the cost of more basis vectors)
     res_thresh = 1e-6
@@ -28,20 +32,19 @@ if __name__ == "__main__":
 
     # Number of sites (total for TFIM/TFXY/Heisenberg, per spin for fermi_hubbard, AIM)
     N = 4
+    NI = 1
+    NB = N - NI
 
     # None or Between 0 and N (2*N for AIM, fermi_hubbard), N for
     # TFIM/TFXY/Heisenberg. Can be tuple for (n_up, n_down) for AIM,
     # fermi_hubbard
     ps = None
 
-    # AIM = Single Impurity Anderson Model, fermi_hubbard, TFIM, TFXY,
-    # heisenberg
-    model_type = "TFIM"
-
     # Parameter grid values for training grid
     mu = np.linspace(-5.0, 5.0, 20)
     mu_2 = np.linspace(-5.0, 5.0, 20)
     mu_chem = 0.5
+    U = 4.0
 
     if model_type == "fermi_hubbard":
         mu_2 = np.linspace(1.0, 5.0, 20)
@@ -49,7 +52,7 @@ if __name__ == "__main__":
     H_paulis = get_model_paulis(model_type, N)
 
     model_params = get_model_parameters(model_type)
-    model_parameters = get_model_base_parameters(model_type)
+    model_parameters = get_model_base_parameters(model_type, N)
     H_paulis_order = {}
 
     for i, pauli in enumerate(H_paulis):
@@ -88,6 +91,7 @@ if __name__ == "__main__":
                 )
             model_paulis = model_to_paulis(N, model_type, model_parameters)
             params = np.zeros(len(H_paulis), dtype=tuple)
+            print(model_parameters)
 
             for t in model_paulis:
                 try:
@@ -109,8 +113,9 @@ if __name__ == "__main__":
         surrogate_ord = "uudd"
     model = SurrogateModel(
         model_type,
-        model_params,
-        surrogate_N,
+        #model_params,
+        ('J', 'h'),
+        N,
         particle_selection=ps,
         basis_ordering=surrogate_ord,
         sparse=True,
@@ -118,7 +123,7 @@ if __name__ == "__main__":
         svd_tolerance=svd_tol,
         sparse_proportion=sparse_proportion,
         degeneracy_truncation=degeneracy_truncation,
-        processes=4
+        processes=1
     )
 
     model.build_terms()

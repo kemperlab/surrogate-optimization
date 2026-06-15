@@ -258,14 +258,7 @@ class ResidualCostFunction(CostFunctionInterface[float]):
         training_points = []
 
         for point in self.search_points:
-            training_points.append(
-                param_to_paulis(
-                    point,
-                    self.model.params,
-                    self.model.model_name,
-                    self.model.N
-                )
-            )
+            training_points.append(self.model.theta_to_training_point(point))
         
         return np.array(training_points)
 

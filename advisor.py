@@ -4,14 +4,13 @@ import scipy as sp
 from costfunction import CostFunctionInterface
 from dataclasses import dataclass
 from gaussian import *
-from pauli import param_to_paulis
+from pauli import *
 from surrogate2 import SurrogateModel
 
 @dataclass
 class EvaluatedPoint:
     theta: np.ndarray
     cost: float
-
 
 class SurrogateAdvisor:
     """
@@ -28,6 +27,7 @@ class SurrogateAdvisor:
     cost_gp: GaussianProcess
     evaluations: list[EvaluatedPoint]
     rng: np.random.Generator
+    samples: np.ndarray
 
     def __init__(
         self,
@@ -36,7 +36,7 @@ class SurrogateAdvisor:
         param_bounds: list[tuple[float, float]],
         exploration_weight = 1.0,
         diversity_weight = 1.0,
-        log_sample_size: int = 6,
+        log_sample_size: int = 5,
         gp_class: type[GaussianProcess] = SklearnGP,
         seed: int | None = None
     ):
@@ -51,9 +51,13 @@ class SurrogateAdvisor:
         self.evaluations = []
         self.rng = np.random.default_rng(seed)
         self.sobol = sp.stats.qmc.Sobol(len(param_bounds), rng = self.rng)
+        self.samples = None
 
     def sobol_sample(self):
         samples = self.sobol.random_base2(self.log_sample_size)
+        self.samples = []
+        thetas = []
+        costs = []
 
         # add each point to the GP
         for sample in samples:
@@ -62,28 +66,28 @@ class SurrogateAdvisor:
                 for b, s in zip(self.param_bounds, sample)
             ]
 
-            training_point = param_to_paulis(
-                theta,
-                self.model.params,
-                self.model.name,
-                self.model.N
-            )
-
+            self.samples.append(theta)
+            training_point = self.model.theta_to_training_point(theta)
             cost = self.cfi.cost_function(training_point)
-            self.record_evaluation(theta, cost)
-            print("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+            thetas.append(theta)
+            costs.append(cost)
 
-    def record_evaluation(
+            print(f"Sampled {theta} with cost {cost}")
+
+        self.record_evaluations(thetas, costs)
+
+    def record_evaluations(
         self,
-        theta: np.ndarray,
-        cost: float
+        thetas: list[np.ndarray],
+        costs: list[float]
     ):
-        self.evaluations.append(
-            EvaluatedPoint(
-                theta=theta,
-                cost=cost
+        for t, c in zip(thetas, costs):
+            self.evaluations.append(
+                EvaluatedPoint(
+                    theta=t,
+                    cost=c
+                )
             )
-        )
 
         self.refit()
 
