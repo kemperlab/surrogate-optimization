@@ -11,6 +11,8 @@ from openfermion import (
 )
 from openfermion.linalg import get_sparse_operator
 import scipy.sparse as sps
+import scipy.sparse.linalg as spla
+from functions_for_liam import *
 
 class Pauli:
     I = np.array([
@@ -309,33 +311,9 @@ def model_to_paulis(
         return pauli_list
 
     elif model == "AIM":
-        one_body = np.zeros((N, N))
-        two_body = np.zeros((N, N, N, N))
-
-        NI = int(model_parameters.get("NI", 1))
-        NB = N - NI
-        ei = model_parameters.get("ei", [0.0] * NI)
-        ebs = model_parameters.get("eb", np.linspace(0.1, 2, NB))
-        vbs = model_parameters.get("vb", np.linspace(0.1, 2, NB))
-        U = model_parameters.get("U", 4.0)
-        mu = model_parameters.get("mu", U / 2)
-
-        for i in range(NI):
-            one_body[i, i] = ei[i] - mu
-            two_body[i, i, i, i] = U
-        for i in range(NI - 1):
-            two_body[i, i + 1, i + 1, i] = U
-            two_body[i + 1, i, i, i + 1] = U
-
-        for i in range(NI):
-            for j in range(NB):
-                one_body[NI + j, NI + j] = ebs[j]
-                one_body[i, NI + j] = vbs[j]
-                one_body[NI + j, i] = vbs[j]
-
-        jw_hamiltonian = jordan_wigner(
-            get_fermion_operator(generate_hamiltonian(one_body, two_body, 0))
-        )
+        model_parameters["eb"] = np.array([model_parameters["eb"]])
+        model_parameters["vb"] = np.array([model_parameters["vb"]])
+        jw_hamiltonian = AIM_hamiltonian_JW(model_parameters)
 
         pauli_list = of_operator_to_pauli_and_coeff(N * 2, jw_hamiltonian)
         return pauli_list
@@ -393,8 +371,8 @@ def get_model_paulis(model_type, N):
     elif model_type == "fermi_hubbard":
         model_parameters = {
             "t": 1.0,
-            "mu": 1.0,
             "U": 1.0,
+            "mu": 0.5,
             "periodic": False,
         }
     elif model_type == "AIM":
@@ -446,8 +424,8 @@ def get_model_base_parameters(model_type, N):
     elif model_type == "fermi_hubbard":
         model_parameters = {
             "t": 1.0,
-            "mu": 1.0,
             "U": 1.0,
+            "mu": 0.5,
             "periodic": False,
         }
     elif model_type == "AIM":
@@ -479,7 +457,7 @@ def get_model_parameters(model_type):
     elif model_type == "heisenberg":
         model_parameters = ("Jx", "Jy", "Jz", "h")
     elif model_type == "fermi_hubbard":
-        model_parameters = ("t", "mu", "U")
+        model_parameters = ("t", "U", "mu")
     elif model_type == "AIM":
         model_parameters = ("NI", "NB", "U", "ei", "vb", "eb", "mu")
 
@@ -530,10 +508,41 @@ def theta_to_param(theta, selected_params, model_type, N):
 
         return tuple(param)
 
+    elif model_type == "fermi_hubbard":
+        params = []
+        if "t" in selected_params:
+            idx = selected_params.index("t")
+            params.append(theta[idx])
+        else:
+            params.append(1.0)
+
+        if "U" in selected_params:
+            idx = selected_params.index("U")
+            params.append(theta[idx])
+        else:
+            params.append(4.0)
+
+        if "mu" in selected_params:
+            idx = selected_params.index("mu")
+            params.append(theta[idx])
+        else:
+            params.append(theta[1] / 2)
+
+        return tuple(params)
+
     elif model_type == "AIM":
         NI = 1
         NB = N - NI
         param = [NI, NB]
+        if len(theta) == 6:
+            param = [
+                NI, NB,
+                theta[0], [0.0],
+                [theta[1], theta[2], theta[3], theta[2], theta[3]],
+                [0, theta[4], theta[5], -theta[4], -theta[5]],
+                theta[0] / 2
+            ]
+            return tuple(param)
 
         if "U" in selected_params:
             idx = selected_params.index("U")
@@ -578,3 +587,174 @@ def theta_to_param(theta, selected_params, model_type, N):
             param.append(param[2] / 2)
 
         return tuple(param)
+
+def get_op_dict(jw_hamiltonian, N, sparse=True, make_ops=True):
+    op_dict = {}
+    for term in jw_hamiltonian.terms:
+        pauli_string = ""
+        for qubit_index in range(N):
+            if qubit_index in [idx for idx, _ in term]:
+                pauli_type = [ptype for idx, ptype in term if idx == qubit_index][0]
+                pauli_string += f"{pauli_type}{qubit_index} "
+        pauli_string = pauli_string.strip()  # Remove trailing space
+        coeff = jw_hamiltonian.terms[term]
+        if make_ops:
+            if sparse:
+                op = get_sparse_operator(QubitOperator(pauli_string, 1.0), N)
+            else:
+                op = get_sparse_operator(QubitOperator(pauli_string, 1.0), N).toarray()
+            op_dict[pauli_string] = (coeff.real, op)
+        else:
+            op = pauli_string
+            op_dict[pauli_string] = coeff.real
+    return op_dict
+def get_particle_selected_basis(
+    s: int | tuple[int], N: int, ordering="udud"
+) -> np.ndarray:
+    """
+    Get the particle-number (and possibly spin) sector basis for a system of N sites.
+    If the basis file does not exist, it will be calculated and saved.
+    Args:
+        s (int | tuple[int]): Number of particles (or tuple of spin-up and
+            spin-down particles).
+        N (int): Total number of sites.
+    Returns:
+        np.ndarray: Array of basis states in integer representation.
+    """
+
+    spin_protected = isinstance(s, tuple)
+    basis_dir = "basis_ixs_udud"
+    os.makedirs(basis_dir, exist_ok=True)
+    if spin_protected:
+        basis_file = os.path.join(basis_dir, f"basis_{N}_{s[0]}_{s[1]}.txt")
+    else:
+        basis_file = os.path.join(basis_dir, f"basis_{N}_{s}.txt")
+    try:
+        basis = np.loadtxt(basis_file).astype(np.int64)
+        return basis
+    except FileNotFoundError:
+        print("No basis file, calculating now...")
+        if spin_protected:
+            if ordering == "udud":
+                if N % 2 != 0:
+                    raise ValueError("N must be even for spin-protected basis.")
+                if (s[0] > N // 2) or (s[1] > N // 2):
+                    raise ValueError(
+                        "Number of spin-up or spin-down particles exceeds half the system size."
+                    )
+
+                half = N // 2
+                # Generate all bit patterns for each half
+                # Build patterns on even and odd site indices (0-based)
+                even_positions = list(range(0, N, 2))
+                odd_positions = list(range(1, N, 2))
+
+                first_half = np.zeros(comb(len(even_positions), s[0]), dtype=np.int64)
+                for i, ones_idx in enumerate(
+                    combinations(range(len(even_positions)), s[0])
+                ):
+                    n = 0
+                    for idx in ones_idx:
+                        pos = even_positions[idx]
+                        n |= 1 << (N - 1 - pos)
+                    first_half[i] = n
+
+                second_half = np.zeros(comb(len(odd_positions), s[1]), dtype=np.int64)
+                for i, ones_idx in enumerate(
+                    combinations(range(len(odd_positions)), s[1])
+                ):
+                    n = 0
+                    for idx in ones_idx:
+                        pos = odd_positions[idx]
+                        n |= 1 << (N - 1 - pos)
+                    second_half[i] = n
+
+                # Combine even- and odd-site patterns
+                basis = np.zeros(len(first_half) * len(second_half), dtype=np.int64)
+                idx = 0
+                for fh in first_half:
+                    for sh in second_half:
+                        basis[idx] = fh | sh
+                        idx += 1
+
+                basis = np.sort(basis)
+                np.savetxt(basis_file, basis, fmt="%d")
+                return basis
+
+            if ordering == "uudd":
+
+                if N % 2 != 0:
+                    raise ValueError("N must be even for spin-protected basis.")
+                if (s[0] > N // 2) or (s[1] > N // 2):
+                    raise ValueError(
+                        "Number of spin-up or spin-down particles exceeds half the system size."
+                    )
+
+                half = N // 2
+                # Generate all bit patterns for each half
+                first_half = np.zeros(comb(half, s[0]), dtype=np.int64)
+                for i, ones_pos in enumerate(combinations(range(half), s[0])):
+                    n = 0
+                    for pos in ones_pos:
+                        n |= 1 << (half - 1 - pos)
+                    first_half[i] = n
+
+                second_half = np.zeros(comb(half, s[1]), dtype=np.int64)
+                for i, ones_pos in enumerate(combinations(range(half), s[1])):
+                    n = 0
+                    for pos in ones_pos:
+                        n |= 1 << (half - 1 - pos)
+                    second_half[i] = n
+
+                # Combine both halves
+                basis = np.zeros(len(first_half) * len(second_half), dtype=np.int64)
+                idx = 0
+                for fh in first_half:
+                    for sh in second_half:
+                        combined = (fh << half) | sh
+                        basis[idx] = combined
+                        idx += 1
+
+                basis = np.sort(basis)
+                np.savetxt(basis_file, basis, fmt="%d")
+                return basis
+
+            else:
+                raise NotImplementedError(
+                    f"Ordering '{ordering}' not implemented for spin-protected basis."
+                )
+
+        else:
+
+            basis = np.zeros(comb(N, s), dtype=np.int64)
+            for i, ones_pos in enumerate(combinations(range(N), s)):  # type: ignore
+                n = 0
+                for pos in ones_pos:
+                    n |= 1 << (N - 1 - pos)
+                basis[i] = n
+            basis = np.sort(basis)
+            np.savetxt(basis_file, basis, fmt="%d")
+            return basis
+if __name__ == "__main__":
+    model_parameters = {
+        "NI": 1,  # Number of impurity sites (spatial orbitals)
+        "NB": 5,  # Number of bath sites (spatial orbitals)
+        "U": 4.0,  # Hubbard U
+        "J": 0.0,  # Hund's coupling (only used for NI>1)
+        "mu": 2.0,  # Chemical potential (only used for NI=3 to ensure half-filling)
+        "ei": [0.0],  # Impurity on-site energies
+        "eb": np.array([[0.0, 1.0, 2.0, -1.0, -2.0]]),  # Bath on-site energies
+        "vb": np.array([[0.5, 1.0, 1.1, 1.0, 1.1]]),  # Impurity-bath hybridization
+    }
+    jw_h = AIM_hamiltonian_JW(model_parameters)
+    N = 2 * (model_parameters["NI"] + model_parameters["NB"])
+    op_dict = get_op_dict(jw_h, N, sparse=True, make_ops=True)
+
+    H = sum(c[0]*c[1] for (s, c) in op_dict.items())
+
+
+    ps_basis = get_particle_selected_basis(s=(3,3), N=2 * (model_parameters["NI"] + model_parameters["NB"]))
+    print(H[ps_basis[:, None], ps_basis[None, :]].real.shape)
+    evals, evecs = spla.eigsh(H[ps_basis[:, None], ps_basis[None, :]].real, k=int(0.5*400), which="SA")
+
+    print([e for e in evals[:10]])

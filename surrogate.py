@@ -1,797 +1,305 @@
+import abc
+import copy
+import datetime
+import io
 import numpy as np
 import scipy as sp
-import scipy.sparse as sps
-from pauli import *
-import copy
-import matplotlib.pyplot as plt
-from math import comb
-import matplotlib.colors as mcolors
-import openfermion as of
-import os
-import time
-from datetime import datetime
-from concurrent.futures import ProcessPoolExecutor
+import sys
+
+from pathos.multiprocessing import ProcessPool
+from costfunction import *
 from functools import partial
-import itertools
+from pauli import *
 
 class SurrogateModel:
-    """
-    A class to do surrogate optimizations on a Hamiltonian and a training grid
-    of parameters
-
-    Attributes:
-    -----------
-    model_name : `str`
-        The name to use for the model when saving files
-    N : `int`
-        The number of particles in the system
-    pauli_strings: `list[str]`
-        A list of Pauli strings that comprise the Hamiltonian
-    H_terms : `dict[str, np.ndarray]`
-        A list of each term (as a matrix) in the Hamiltonian
-    H2_terms : `dict[str, np.ndarray]`
-        A list of each term (as a matrix) in the square of the Hamiltonian
-    H_fulls : `dict[str, np.ndarray]`
-        A list of the Hamiltonians for each training grid parameter in the
-        full Hilbert space
-    training_grid : `np.ndarray`
-        A NumPy array of dicts representing the training grid of parameters,
-        each dict maps a pauli string to a coefficient for that term.
-    training_grid2 : `np.ndarray`
-        A NumPy array of dicts representing the square of the training grid of
-        parameters, each dict maps a two multiplied pauli string to a
-        coefficient for that term.
-    opt_basis : `np.ndarray`
-        A matrix with the columns representing basis vectors, this is the
-        optimal basis calculated by the surrogate optimization, None until
-        optimize is run.
-    overlap : `np.ndarray`
-        The overlap matrix for the optimal basis
-    reduced_terms : `dict[str, np.ndarray]`
-        A dictionary maping pauli strings to their matrix representation in the
-        optimal, reduced basis.
-    particle_selection : `tuple[int, int] | int`
-        The particle selection for the model. An integer for non-spin-selected,
-        a tuple (up, down) for spin-selected, or None for non-particle-selected
-    basis_ordering : `str`
-        The ordering of up and down spins in the basis, uudd or udud
-    sparse : bool
-        Whether or not sparse matrices are being used, default to True
-    log : bool
-        Whether or not to log results
-    save_folder : str
-        The folder to save in
-    size : int
-        The size of the Hilbert space, 2**N if not using particle-selection
-    """
-
-    model_name: str
+    # Model Parameters
+    name: str
+    params: list[str]
+    selected_params: tuple[str]
     N: int
     pauli_strings: list[str]
-    H_terms: dict[str, np.ndarray]
-    H2_terms: dict[str, np.ndarray]
-    H_fulls: dict[str, np.ndarray]
-    training_grid: np.ndarray
-    training_grid2: np.ndarray
-    opt_basis: np.ndarray
-    overlap: np.ndarray
-    reduced_terms: dict[str, np.ndarray]
-    particle_selection: tuple[int, int] | int
+    particle_selection: tuple[int, int] | int | None
     basis_ordering: str
     sparse: bool
-    log: bool
-    save_folder: str
+    max_it: int
+    processes: int
+    max_condition: float
+    svd_tolerance: float
+    sparse_proportion:  float
+    degeneracy_truncation: int
+
+    # Output
+    opt_overlap: np.ndarray | None
+    opt_basis: np.ndarray | None
+    opt_Hr_terms: dict[str, np.ndarray] | None
+
+    # Internal State
     size: int
+    H_terms: dict[str, np.ndarray] | None
+    H_fulls: dict[str, np.ndarray] | None
+    overlap: np.ndarray | None
+    basis_list: list | None
+    basis: np.ndarray | None
+    Hr_terms: dict[str, np.ndarray] | None
+    iteration_costs: list
+    pp: ProcessPool | None
+    save_folder: str | None
 
     def __init__(
         self,
-        model_name: str,
+        name: str,
+        selected_params: tuple[str],
         N: int,
-        pauli_strings: list[str],
-        training_grid: np.ndarray,
-        particle_selection: tuple[int, int] | int = None,
-        basis_ordering: str = "uudd",
-        log: bool = False,
-        sparse=True
+        particle_selection: tuple[int, int] | int | None = None,
+        max_it: int | None = None,
+        sparse: bool = True,
+        max_condition: float = 1e10,
+        svd_tolerance: float = 1e-8,
+        sparse_proportion:  float = .20,
+        degeneracy_truncation: int = 5,
+        processes: int = 1,
+        output_stream: io.IOBase = sys.stdout,
+        save_folder: str | None = "."
     ):
-        """
-        Contructs the surrogate model for a given Hamiltonian
-
-        Parameters:
-        -----------
-        model_name : `str`
-            the name of the model to use when saving files
-        N : `int`
-            The number of particles in the system
-        pauli_strings: `list[str]`
-            A list of Pauli strings that comprise the Hamiltonian
-        training_grid : `np.ndarray`
-            A NumPy array of dicts representing the training grid of parameters,
-            each dict maps a pauli string to a coefficient for that term.
-        particle_selection : `tuple[int, int] | int`
-            The particle selection for the model. An integer for
-            non-spin-selected, a tuple (up, down) for spin-selected, or None for
-            non-particle-selected
-        basis_ordering : `str`
-            The ordering of up and down spins in the basis, uudd or udud
-        log : bool
-            Whether or not to log results
-        """
-        self.model_name = model_name
-
-        self.N = N
-        self.sparse = sparse
-        self.pauli_strings = pauli_strings
-        self.H_terms = None
-        self.H2_terms = None
-        self.H_fulls = None
-        self.training_grid = np.array(training_grid, dtype=dict)
-        self.training_grid2 = None
-        self.opt_basis = None
-        self.overlap = None
-        self.reduced_terms = None
+        self.name = name
+        self.params = get_model_parameters(self.name)
+        self.selected_params = selected_params
+        self.N_spin = N
+        self.N = get_model_N(self.name, N)
+        self.pauli_strings = get_model_paulis(self.name, self.N_spin)
         self.particle_selection = particle_selection
-        self.basis_ordering = basis_ordering
-        self.log = log
+        self.sparse = sparse
+        self.max_condition = max_condition
+        self.svd_tolerance = svd_tolerance
+        self.sparse_proportion = sparse_proportion
+        self.degeneracy_truncation = degeneracy_truncation
+        self.processes = processes
+        self.output_stream = output_stream
 
+        self.opt_overlap = None
+        self.opt_basis = None
+        self.opt_Hr_terms = None
+
+        self.H_terms = None
+        self.H_fulls = None
+        self.overlap = None
+        self.basis_list = None
+        self.basis = None
+        self.Hr_terms = None
+        self.iteration_costs = None
+
+        if save_folder:
+            self.save_folder = save_folder + f"/{self.name}_{self.N_spin}"
+            
+            if self.sparse:
+                self.save_folder += "_sparse"
+
+            if not os.path.isdir(self.save_folder):
+                os.mkdir(self.save_folder)
+        else:
+            self.save_folder = None
+        
         if type(self.particle_selection) == type(None):
-            self.size = 2**N
+            self.size = 2**self.N
         elif type(self.particle_selection) == int:
-            self.size = comb(N, self.particle_selection)
+            self.size = comb(self.N, self.particle_selection)
         elif type(self.particle_selection) == tuple:
             self.size = (
-                comb(N // 2, self.particle_selection[0])
-                * comb(N // 2, self.particle_selection[1])
+                comb(self.N // 2, self.particle_selection[0])
+                * comb(self.N // 2, self.particle_selection[1])
             )
         else:
             raise Exception(
                 "Particle selection should be an int, a tuple, or None"
             )
 
-        self.save_folder = self.model_name + "_" + "N" + "_" + str(self.N)
+        if type(max_it) == type(None):
+            self.max_it = self.size
+        else:
+            self.max_it = max_it
 
-        if self.log:
-            if not os.path.isdir(self.save_folder):
-                os.mkdir(self.save_folder)
-            np.savez(
-                (self.save_folder + "/" + "training_grid_"
-                + datetime.now().isoformat()).replace(":", "."),
-                self.training_grid
+        if self.processes == 1:
+            self.pp = None
+        elif self.processes > 1:
+            self.pp = ProcessPool(nodes=processes)
+        else:
+            raise Exception(
+                "Number of processes should be an integer greater than or equal"
+                + " to one"
             )
 
-        self._append_to_log(f"Model initialized with: {self.pauli_strings}")
+        if self.name == "AIM" or self.name == "fermi_hubbard":
+            self.basis_ordering = "udud"
+        else:
+            self.basis_ordering = "uudd"
 
-    def _append_to_log(
-        self,
-        text: str
-    ):
-        """
-        Appends the given text to the log file
+        self.log(f"Initializing surrogate model for {self.name}")
+        self.log(f"Paulis: {self.pauli_strings}")
+        self.log(f"N: {self.N_spin}")
+        self.log(f"Selected Parameters: {self.selected_params}")
 
-        Parameters
-        ----------
-        text : `str`
-            The text to append to the log file
-        """
-        if self.log:
-            if not os.path.isdir(self.save_folder):
-                os.mkdir(self.save_folder)
-            with open(self.save_folder + "/surrogate.log", "a") as f:
-                f.write(text + "\n")
+    def reset(self):
+        self.log("Resetting model...")
+        self.opt_overlap = None
+        self.opt_basis = None
+        self.opt_Hr_terms = None
+        self.overlap = None
+        self.basis_list = None
+        self.basis = None
+        self.Hr_terms = None
+        self.iteration_costs = None
 
     def build_terms(
         self,
         pregenerate_fulls: bool = False,
-        save: bool = False,
-        log=False,
-        processes=1
     ):
-        """
-        Builds H_terms and H2_terms
-
-        Parameters
-        ----------
-        pregenerate_fulls : `bool`
-            Pregenerate the Hamiltonian for each training grid point
-        save : `bool`
-            If true, either load the H terms from already saved files or save
-            the generated H terms to a file
-        log : `bool`
-            Whether or not to save logging information
-        processes : `int`
-            If greater than 1, using multithreading to generate the H_terms
-        """
-        start_time = time.perf_counter()
         self.H_terms = {}
 
-        if processes == 1:
+        if self.save_folder:
+            self.log(f"Retrieving terms from {self.save_folder}")
+
+            needed_terms = []
+
             for pauli_string in self.pauli_strings:
-                if save:
-                    if pauli_string == "":
-                        filename = self.save_folder + "/I.bin"
-                    else:
-                        filename = self.save_folder + "/" + pauli_string + ".bin"
-
-                    try:
-                        H_term = np.fromfile(filename, dtype=float).reshape(
-                            (self.size, self.size)
-                        )
-                        self.H_terms[pauli_string] = np.astype(H_term, complex)
-                    except:
-                        self.H_terms[pauli_string] = gen_from_pauli_string(
-                            self.N,
-                            pauli_string,
-                            self.particle_selection,
-                            ordering=self.basis_ordering,
-                            sparse=self.sparse
-                        )
-
-                        np.astype(self.H_terms[-1], float).tofile(filename)
-
+                if pauli_string == "":
+                    filename = self.save_folder + "/I.npz"
                 else:
-                    self.H_terms[pauli_string] = gen_from_pauli_string(
-                        self.N,
-                        pauli_string,
-                        self.particle_selection,
-                        ordering=self.basis_ordering,
-                        sparse=self.sparse
-                    )
+                    filename = self.save_folder + f"/{pauli_string}.npz"
+                try:
+                    if self.sparse:
+                        self.H_terms[pauli_string] = sp.sparse.load_npz(
+                            filename)
+                        self.log(f"Retrieved {filename}")
+                    else:
+                        self.H_terms[pauli_string] = np.load(filename)["arr_0"]
+                        self.log(f"Retrieved {filename}")
+                except:
+                    needed_terms.append(pauli_string)
+                    self.log(f"Failed to retrieved {filename}")
         else:
-            ppe = ProcessPoolExecutor(processes)
-            batch_size = int(len(self.pauli_strings) / processes + 1)
-            pauli_string_batches = [
-                self.pauli_strings[j:j + batch_size]
-                for j in range(0, len(self.pauli_strings), batch_size)
-            ]
-            H_terms_list = list(ppe.map(
+            needed_terms = copy.copy(self.pauli_strings)
+
+        if len(needed_terms) != 0:
+            self.log(f"Building terms: {needed_terms}")
+
+        if self.processes == 1:
+            for pauli_string in needed_terms:
+                self.H_terms[pauli_string] = gen_from_pauli_string(
+                    pauli_string,
+                    self.N,
+                    self.particle_selection,
+                    ordering=self.basis_ordering,
+                    sparse=self.sparse
+                )
+
+        else:
+            batch_size = int(np.ceil(len(needed_terms) / self.processes))
+            H_terms_list = list(self.pp.map(
                 partial(
-                    gen_from_pauli_string_batch,
+                    gen_from_pauli_string,
                     N=self.N,
                     particle_selection=self.particle_selection,
                     ordering=self.basis_ordering,
                     sparse=self.sparse
                 ),
-                pauli_string_batches
+                needed_terms,
+                chunksize=batch_size
             ))
-            self.H_terms = {}
-            for H_terms_element in H_terms_list:
-                self.H_terms.update(H_terms_element)
+            for pauli_string, H_term in zip(needed_terms, H_terms_list):
+                self.H_terms[pauli_string] = H_term
 
-        self.H2_terms = {}
-        for h_i in self.H_terms.keys():
-            for h_j in self.H_terms.keys():
-                self.H2_terms[h_i + " * " + h_j] = (
-                    self.H_terms[h_i] @ self.H_terms[h_j]
-                )
+        self.log("Built terms")
 
-        self.training_grid2 = []
-        for mu in self.training_grid:
-            bulk = {}
-            for mu_i in mu.keys():
-                for mu_j in mu.keys():
-                    bulk[mu_i  + " * " +  mu_j] = (
-                        mu[mu_i] * mu[mu_j]
-                    )
-            self.training_grid2.append(bulk)
+        if self.save_folder and len(needed_terms) != 0:
+            for pauli_string in needed_terms:
+                if pauli_string == "":
+                    filename = self.save_folder + "/I.npz"
+                else:
+                    filename = self.save_folder + f"/{pauli_string}.npz"
+                if self.sparse:
+                    sp.sparse.save_npz(filename, self.H_terms[pauli_string])
+                else:
+                    np.savez_compressed(filename, self.H_terms[pauli_string])
+                self.log(f"Saving term in {filename}")
 
-        end_time = time.perf_counter()
-
-        self._append_to_log(
-            "H Terms build in: " + str(end_time - start_time) + " seconds"
-        )
-
-        if pregenerate_fulls:
-            start_time = time.perf_counter()
-
-            self.H_fulls = []
-            for i in range(len(self.training_grid)):
-                self.H_fulls.append(self._build_H_full(i))
-            
-            end_time = time.perf_counter()
-            self._append_to_log(
-                "H Fulls build in: " + str(end_time - start_time) + " seconds"
-            )
-
-    def _build_H_full(
+    def init_optimize(
         self,
-        parameter_idx: int
-    ) -> np.ndarray:
-        """
-        Builds the full Hamiltonian for a given paremeter index
-
-        Parameters
-        ----------
-        parameter_idx : `int`
-            the parameter index to build the full Hamiltonian for
-
-        Returns
-        -------
-        H_full : `np.ndarray`
-            The matrix in the full Hilbert space
-        """
-
-        H_full = np.zeros((self.size, self.size), dtype=complex)
-        for pauli in self.pauli_strings:
-            H_full += (
-                self.training_grid[parameter_idx][pauli] * self.H_terms[pauli]
-            )
-
-        return H_full
-
-    def _calculate_residue2_batch(
-        self,
-        js: list[int],
-        basis: np.ndarray = None,
-        overlap: np.ndarray = None,
-        Hr_terms: dict[str, np.ndarray] = None,
-        H2r_terms: dict[str, np.ndarray] = None,
-        degeneracy_truncation: int = None,
+        cfi: CostFunctionInterface,
+        init_theta: tuple
     ):
-        """
-        Calculates residues for a batch of parameter indices
+        self.log(f"Initializing optimization with parameter point {init_theta}")
+        init_training_point = self.theta_to_training_point(init_theta)
 
-        Parameters
-        ----------
-        js : `list[int]`
-            The list of parameter indices to calculate residues for
-        basis : `np.ndarray`
-            The current basis to use for residue calculations
-        overlap : `np.ndarray`
-            The current overlap matrix to use for residue calculations
-        Hr_terms : `np.ndarray`
-            The current reduced terms to use for residue calculations
-        H2r_terms : `np.ndarray`
-            The current reduced terms squared to use for residue calculations
-        degeneracy_truncation : `int`
-            The max degeracy in the ground state to sue for residue calculations
+        # build terms if they are not already built
+        if(type(self.H_terms) == type(None)):
+            self.build_terms()
+        
+        # cost for each iteration
+        self.basis = np.zeros((self.size, 0), dtype=complex)
+        self.overlap = np.zeros((0, 0), dtype=complex)
 
-        Returns
-        -------
-        residues : `list[float]`
-            A list of residues for the given parameter indices
-        """
-        residues = []
-        for j in js:
-            residues.append(
-                self._calculate_residue2(
-                    j,
-                    basis,
-                    overlap,
-                    Hr_terms,
-                    H2r_terms,
-                    degeneracy_truncation
-                )
+        H_full = self.build_H_full(init_training_point)
+        if self.sparse:
+            evals, evecs = sps.linalg.eigsh(
+                H_full.real,
+                k=int(self.size * self.sparse_proportion),
+                which='SA'
             )
+        else:
+            evals, evecs = sp.linalg.eigh(H_full)
 
-        return residues
+        init_vec = evecs[:, 0]
 
-    def _calculate_residue2(
-        self,
-        j: int,
-        basis: np.ndarray = None,
-        overlap: np.ndarray = None,
-        Hr_terms: list[np.ndarray] = None,
-        H2r_terms: list[np.ndarray] = None,
-        eigen_shift: float = 0,
-        degeneracy_truncation: float = None
-    ):
-        """
-        Calculates residues for a batch of parameter indices
+        self.basis_list = [init_vec]
+        self.basis = np.array(self.basis_list).T
+        self.overlap = (self.basis.conj().T @ self.basis).real
+        self.build_Hr_terms()
 
-        Parameters
-        ----------
-        j : `int`
-            The parameter index to calculate the residue for
-        basis : `np.ndarray`
-            The current basis to use for residue calculation
-        overlap : `np.ndarray`
-            The current overlap matrix to use for residue calculation
-        Hr_terms : `np.ndarray`
-            The current reduced terms to use for residue calculation
-        H2r_terms : `np.ndarray`
-            The current reduced terms squared to use for residue calculation
-        degeneracy_truncation : `int`
-            The max degeracy in the ground state to sue for residue calculation
+        # initial iteration preiteration
+        cfi.preiteration()
 
-        Returns
-        -------
-        res2 : `float`
-            The residue for the given parameter index
-        """
-        Hr = np.zeros((basis.shape[1], basis.shape[1]), dtype=complex)
-        for pauli in Hr_terms.keys():
-            Hr += self.training_grid[j][pauli] * Hr_terms[pauli]
+        init_cost = cfi.cost_function(init_training_point)
+        costs = np.array([[init_cost]])
+        training_points = np.array([init_training_point])
 
-        H2r = np.zeros((basis.shape[1], basis.shape[1]), dtype=complex)
-        for pauli2 in H2r_terms.keys():
-            H2r += self.training_grid2[j][pauli2] * H2r_terms[pauli2]
+        # for constitency, this must be run as in some cases it changes the
+        # state of the cost function interface, even if we don't use the output
+        cfi.cost_selector(training_points, costs)
 
-        evals, evecs = sp.linalg.eigh(
-            Hr + eigen_shift * np.eye(basis.shape[1]),
-            overlap
-        )
+        self.log("Adding point...")
+        self.log(f"Training point: {init_training_point}")
+        self.log(f"Cost: {init_cost}")
 
-        # find degeneracy of the ground state
-        degeneracy = 0
-        eps = 1e-10 # for comparing floating points of GSE
-        for e in evals:
-            # absolute value is not needed here, e >= evals[0]
-            if e - evals[0] < eps:
-                degeneracy += 1
-            else:
-                break
-            if degeneracy >= degeneracy_truncation:
-                break
-
-        # calculate residue
-        res2 = 0
-        for k in range(degeneracy):
-            res2 += (
-                evecs[:, k].conj().T
-                @ (H2r - ((evals[k] * evals[k]) * overlap))
-                @ evecs[:, k]
-            )
-
-        return res2
-
+        return costs
 
     def optimize(
         self,
-        residue_threshold: float = 1e-6,
-        init_vec: np.ndarray = None,
-        solution_grid: tuple[np.ndarray, np.ndarray] = None,
-        svd_tolerance: float = 1e-8,
-        degeneracy_truncation: int = 5,
-        save: bool = False,
-        residue_graphing: bool = False,
-        eigen_shift: float = 0,
-        sparse_proportion: float = .25,
-        processes=1
+        cfi: CostFunctionInterface,
+        init_param_point: dict,
     ):
-        """
-        Does the actual surrogate optimiation
+        self.iteration_costs = []
 
-        Parameters
-        ----------
-        residue_threshold : `float`
-            The value that the maximum residual should be before terminating
-            the surrogate optimization
-        init_vec : `np.ndarray`
-            An initial vector to use for the optimization. Should have a size
-            given by `self.size`
-        solution_grid : `np.ndarray`
-            For use with two parameters being varied only. A grid of actual
-            ground state energies to graph and check against. Not used in the
-            actual optimization process, only for testing.
-        svd_tolerance : `float`
-            The value to consider "zero" when doing an SVD.
-        degeneracy_truncation : `int`
-            The maximum number of degenerate eigenvectors to include in the
-            ground state
-        save : `bool`
-            Whether or not to attempt to load the optimal basis from a file. If
-            the attempt fails, run the optimization and save it to a file.
-        residue_graphing : `bool`
-            Show a graph of the residuals for each parameter point for each
-            iteration
-
-        Returns
-        -------
-        self.opt_basis : `np.ndarray`
-            A matrix representing the optimal basis, with columns representing
-            each basis vector. There will be `self.size` number of rows
-        """
-        start_time = time.perf_counter()
-
-        if processes > 1:
-            ppe = ProcessPoolExecutor(processes)
-        if save:
-            save_folder = self.model_name + "_" + "N" + "_" + str(self.N)
-            filename = save_folder + "/basis.bin"
-            try:
-                flat = np.astype(
-                    np.fromfile(filename, dtype=float),
-                    complex
-                )
-                num_basis_vecs = flat.shape[0] // self.size
-                self.opt_basis = flat.reshape(self.size, num_basis_vecs)
-                self.overlap = self.opt_basis.conj().T @ self.opt_basis
-
-                return self.opt_basis
-            except:
-                if not os.path.isdir(save_folder):
-                    os.mkdir(save_folder)
-        # build terms if they are not already built
-        if (
-            type(self.H_terms) == type(None)
-            or type(self.H2_terms) == type(None)
-            or type(self.training_grid2) == type(None)
-        ):
-            self.build_terms()
-
-        # list of indices into the training grid
-        chosen = []
-
-        # list of remaining indices into the training grid
-        not_chosen = list(range(len(self.training_grid)))
-
-        self._append_to_log("Initializing Optimization")
-        # initial vector is not provided, so we choose from the training grid
-        if type(init_vec) == type(None):
-            if type(self.H_fulls) == type(None):
-                H_full = self._build_H_full(0)
-            else:
-                H_full = self.H_fulls[0]
-            if self.sparse:
-                evals, evecs = sps.linalg.eigsh(
-                    H_full.real,
-                    k=int(self.size*sparse_proportion),
-                    which='SA'
-                )
-            else:
-                evals, evecs = sp.linalg.eigh(H_full)
-            init_vec = evecs[:, 0]
-            chosen.append(0)
-            not_chosen.remove(0)
-
-            self._append_to_log("Chose param point 0")
-        else:
-            self._append_to_log("Given starting vector: " + str(init_vec))
-
-        basis_list = [init_vec]
-        basis = np.array(basis_list).T
-
-        if type(solution_grid) != type(None):
-            self._graph_solution_comparison(solution_grid, basis, chosen)
-
-        # iteration
-        num_iterations = len(not_chosen)
-        for i in range(num_iterations):
-            self._append_to_log(f"Iteration {i + 1}")
-            overlap = (basis.conj().T @ basis).real
-            max_res2 = -np.inf
-            next_choice = None
-            residues = []
-            start_time_Hr = time.perf_counter()
-            Hr_terms = {}
-            H2r_terms = {}
-
-            for pauli in self.H_terms.keys():
-                Hr_terms[pauli] = basis.conj().T @ self.H_terms[pauli] @ basis
-            for pauli in self.H2_terms.keys():
-                H2r_terms[pauli] = basis.conj().T @ self.H2_terms[pauli] @ basis
-            end_time_Hr = time.perf_counter()
-            self._append_to_log(
-                f"Build Hr and H2r in {end_time_Hr - start_time_Hr} seconds"
+        if type(self.basis) == type(None):
+            # no basis yet, we need to initialize
+            costs = self.init_optimize(
+                cfi,
+                init_param_point,
             )
+            self.iteration_costs.append(costs)
 
-            start_time_residual = time.perf_counter()
-            if processes == 1:
-                for j in not_chosen:
-                    residues.append(self._calculate_residue2(
-                        j,
-                        basis,
-                        overlap,
-                        Hr_terms,
-                        H2r_terms,
-                        eigen_shift,
-                        degeneracy_truncation
-                    ))
-            else:
-                batch_size = int(len(not_chosen) / processes + 1)
-                not_chosen_batches = [
-                    not_chosen[j:j + batch_size]
-                    for j in range(0, len(not_chosen), batch_size)
-                ]
-                residues = list(ppe.map(
-                    partial(
-                        self._calculate_residue2_batch,
-                        basis=basis,
-                        overlap=overlap,
-                        Hr_terms=Hr_terms,
-                        H2r_terms=H2r_terms,
-                        degeneracy_truncation=degeneracy_truncation
-                    ),
-                    not_chosen_batches
-                ))
-                residues = list(itertools.chain.from_iterable(residues))
-
-            max_res2 = np.max(residues)
-            next_choice = not_chosen[np.argmax(residues)]
-
-            end_time_residual = time.perf_counter()
-
-            self._append_to_log(
-                "Residual Calculation took "
-                + f"{end_time_residual - start_time_residual} seconds"
-            )
-            self._append_to_log(f"{len(not_chosen)} residuals calculated")
-            self._append_to_log(
-                f"Max residual {max_res2} for param point {next_choice}"
-            )
-                
-            print("Max Residue", max_res2)
-            print("Number of residues calculated:", len(residues))
-
-            if type(self.H_fulls) == type(None):
-                chosen_H_full = self._build_H_full(next_choice)
-            else:
-                chosen_H_full = self.H_fulls[next_choice]
-
-            if self.sparse:
-                evals, evecs = sps.linalg.eigsh(
-                    chosen_H_full.real,
-                    k=int(self.size*sparse_proportion),
-                    which='SA'
-                )
-            else:
-                evals, evecs = sp.linalg.eigh(chosen_H_full)
-
-            if max_res2 < residue_threshold or len(chosen) >= 2**self.N - 1:
-                end_time = time.perf_counter()
-
-                self._append_to_log(
-                    f"Optimization complete in {end_time - start_time} seconds"
-                )
-
-                print("Optimization complete.")
-                plt.plot(not_chosen, np.array(residues).real, "o-")
-                plt.plot(
-                    [next_choice],
-                    [max_res2.real],
-                    "rx",
-                    label="Next Choice",
-                )
-                plt.xlabel("Training Grid Index")
-                plt.ylabel("Residue")
-                plt.title(f"Termination Residues")
-                plt.show()
-
-                if type(solution_grid) != type(None):
-                    self._graph_solution_comparison(
-                        solution_grid, basis, chosen
-                    )
-
+        self.log("Beginning optimization")
+        for i in range(self.max_it):
+            self.log(f"Iteration {i + 1}")
+            if self.optimize_step(cfi):
                 break
 
-            if residue_graphing:
-                plt.plot(not_chosen, np.array(residues).real, "o-")
-                plt.plot([next_choice], [max_res2.real], "rx", label="Next Choice")
-                plt.xlabel("Training Grid Index")
-                plt.ylabel("Residue")
-                plt.title(f"It {i + 1} Residues")
-                plt.show()
-
-            print("Full system size:", self.size)
-
-            # find degeneracy of the ground state
-            eps = 1e-10 # for comparing floating points of GSE
-            degeneracy = 0
-            for e in evals:
-                if e - evals[0] < eps:
-                    degeneracy += 1
-                else:
-                    break
-                if degeneracy >= degeneracy_truncation:
-                    break
-
-            print("Degeneracy of chosen H_full ground state:", degeneracy)
-            basis_addition = evecs[:, 0:degeneracy]
-            # compress the basis
-            projection = basis_addition - basis @ sp.linalg.solve(
-                overlap, basis.conj().T @ basis_addition
-            )
-
-            U, sigmas, Vdagger = np.linalg.svd(projection)
-            compress_add = 0
-            for s in sigmas:
-                if s > svd_tolerance:
-                    compress_add += 1
-                else:
-                    break
-
-            for j in range(compress_add):
-                basis_list += [U[:, j]]
-
-            basis_reduced = np.array(basis_list).T
-            print("Basis size before compression:", basis.shape[1])
-            print("Basis size after compression:", basis_reduced.shape[1])
-
-            if basis_reduced.shape[1] <= basis.shape[1]:
-                print(
-                    "Warning: Basis did not increase in size after compression."
-                )
-            else:
-                basis = copy.copy(basis_reduced)
-
-            print(
-                "Looking at solutions with current basis of size",
-                basis.shape[1]
-            )
-            if type(solution_grid) != type(None):
-                self._graph_solution_comparison(
-                    solution_grid, basis, chosen, next_choice
-                )
-
-            not_chosen.remove(next_choice)
-            chosen.append(next_choice)
-
-        self.opt_basis = basis
-        self.overlap = basis.conj().T @ basis
-        self.reduced_terms = None
-
-        if save:
-            np.astype(self.opt_basis, float).tofile(filename)
+        self.set_optimal()
 
         return self.opt_basis
 
-    def _graph_solution_comparison(
-        self,
-        solution_grid: np.ndarray,
-        basis: np.ndarray,
-        chosen:  list[int],
-        next_choice: int = None
-    ):
-        answer_grid = np.zeros(
-            solution_grid[0].shape,
-            dtype=complex
-        )
-        for y in range(0, solution_grid[0].shape[0]):
-            for x in range(0, solution_grid[0].shape[1]):
-                if type(self.H_fulls) == type(None):
-                    H_full = self._build_H_full(
-                        y * solution_grid[0].shape[1] + x
-                    )
-                else:
-                    H_full = self.H_fulls[y * solution_grid[0].shape[1] + x]
-
-                Hr = basis.conj().T @ H_full @ basis
-                overlap = basis.conj().T @ basis
-                evals, evecs = sp.linalg.eigh(Hr, overlap)
-                answer_grid[y, x] = evals[0]
-
-        plt.imshow(
-            np.abs((answer_grid - solution_grid[0]).real) + 1e-14,
-            norm=mcolors.LogNorm(vmin=1e-14, vmax=1),
-        )
-        plt.colorbar(norm=mcolors.LogNorm(vmin=1e-14, vmax=1))
-
-        if type(next_choice) != type(None):
-            plt.scatter(
-                next_choice % solution_grid[0].shape[1],  # type: ignore
-                next_choice // solution_grid[0].shape[1],  # type: ignore
-                marker="x",
-                color="red",
-                s=20,
-                label="Next Choice",
-            )
-
-        plt.scatter(
-            np.array(chosen) % solution_grid[0].shape[1],
-            np.array(chosen) // solution_grid[0].shape[1],
-            marker="o",
-            color="orange",
-            s=20,
-            label="Chosen Points",
-        )
-        plt.xlabel(r"$\mu_2$")
-        plt.ylabel(r"$\mu_1$")
-        plt.title(f"Termination errors, Basis Size {basis.shape[1]}")
-        plt.xticks(
-            range(0, solution_grid[0].shape[1], 2),
-            labels=np.round(solution_grid[1], 2)[::2],
-            rotation=45,
-        )
-        plt.yticks(
-            range(0, solution_grid[0].shape[0], 2),
-            labels=np.round(solution_grid[1], 2)[::2],
-            rotation=45,
-        )
-        plt.show()
-
     def solve(
         self,
-        parameters: list[complex],
+        training_point: dict
     ) -> complex:
         """
         Approximate the eigenvalues and eigenvectors for a given set of
@@ -810,27 +318,234 @@ class SurrogateModel:
             A matrix of the eigenvectors, with each column representing each
             eigenvector
         """
-        if (
-            type(self.opt_basis) == type(None)
-            or type(self.overlap) == type(None)
-        ):
-            self.optimize()
+        #if (
+        #    type(self.opt_basis) == type(None)
+        #    or type(self.opt_overlap) == type(None)
+        #):
+        #    self.optimize()
 
-        if type(self.reduced_terms) == type(None):
-            self.reduced_terms = {}
-            for pauli in self.H_terms.keys():
-                self.reduced_terms[pauli] = (
-                    self.opt_basis.conj().T @ self.H_terms[pauli] @ self.opt_basis
-                )
+        if type(self.opt_Hr_terms) == type(None):
+            self.build_Hr_terms()
+            self.opt_Hr_terms = self.Hr_terms()
+        
+        Hr = self.build_Hr(training_point)
 
-        Hr = np.zeros(
-            (self.opt_basis.shape[1], self.opt_basis.shape[1]),
-            dtype=complex
-        )
-
-        for pauli in self.reduced_terms.keys():
-            Hr += parameters[pauli] * self.reduced_terms[pauli]
-
-        evals, evecs = sp.linalg.eigh(Hr, self.overlap)
+        evals, evecs = sp.linalg.eigh(Hr, self.opt_overlap)
 
         return evals, evecs
+
+    def build_H_full(
+        self,
+        training_point: dict,
+    ) -> np.ndarray:
+        """
+        Builds the full Hamiltonian for a given training point
+
+        Parameters
+        ----------
+        training_point : `dict`
+            the training point to build the full Hamiltonian for
+
+        Returns
+        -------
+        H_full : `np.ndarray`
+            The matrix in the full Hilbert space
+        """
+
+        H_full = np.zeros((self.size, self.size), dtype=complex)
+        for pauli in self.pauli_strings:
+            H_full += (
+                training_point[pauli] * self.H_terms[pauli]
+            )
+
+        return H_full
+
+    def build_Hr(
+        self,
+        training_point: dict,
+    ) -> np.ndarray:
+        Hr = np.zeros((self.basis.shape[1], self.basis.shape[1]), dtype=complex)
+        for pauli in self.pauli_strings:
+            Hr += training_point[pauli] * self.Hr_terms[pauli]
+
+        return Hr
+
+    def optimize_step(
+        self,
+        cfi: CostFunctionInterface
+    ) -> bool:
+        if(np.linalg.cond(self.overlap) > self.max_condition):
+            self.log("Condition number is to large")
+            return True
+
+        cfi.preiteration()
+
+        training_points = cfi.gen_training_points()
+        if len(training_points) == 0:
+            # no more training points
+            self.log("No more training points")
+            return True
+
+        self.log(f"Generated {len(training_points)} training points")
+
+        if self.processes == 1:
+            costs = np.zeros(len(training_points), dtype=float)
+            for j, training_point in enumerate(training_points):
+                costs[j] = cfi.cost_function(training_point)
+        else:
+            batch_size = int(np.ceil(len(training_points) / self.processes))
+            costs = np.array(list(self.pp.map(
+                cfi.cost_function,
+                training_points,
+                chunksize = batch_size
+            )))
+
+        training_point_idxs = cfi.cost_selector(training_points, costs)
+        next_training_points = training_points[training_point_idxs]
+        next_costs = costs[training_point_idxs]
+
+        if len(next_training_points) == 0:
+            self.log("No viable training points found")
+            # no training points found, no point in continuing
+            return True
+        else:
+            basis_addition = self.find_basis_addition(
+                next_costs,
+                next_training_points
+            )
+
+            self.compress_basis(basis_addition)
+            self.build_Hr_terms()
+
+        self.iteration_costs.append(next_costs)
+
+        if cfi.check_termination(self.iteration_costs):
+            self.log("Termination condition met")
+            return True
+        
+        return False
+
+    def find_basis_addition(
+        self,
+        next_costs: list,
+        next_training_points: list
+    ):
+        basis_addition = None
+
+        for cost, training_point in zip(
+            next_costs,
+            next_training_points
+        ):
+            H_full = self.build_H_full(training_point)
+
+            if self.sparse:
+                evals, evecs = sps.linalg.eigsh(
+                    H_full.real,
+                    k=int(self.size * self.sparse_proportion),
+                    which='SA'
+                )
+            else:
+                evals, evecs = sp.linalg.eigh(H_full)
+
+            # find degeneracy of the ground state
+            eps = 1e-10 # for comparing floating points of GSE
+            degeneracy = 0
+            for e in evals:
+                if e - evals[0] < eps:
+                    degeneracy += 1
+                else:
+                    break
+                if degeneracy >= self.degeneracy_truncation:
+                    break
+
+            if type(basis_addition) == type(None):
+                basis_addition = evecs[:, 0:degeneracy]
+            else:
+                basis_addition = np.append(
+                    basis_addition,
+                    evecs[:, 0:degeneracy],
+                    axis = 1
+                )
+
+            self.log("Adding point...")
+            self.log(f"Training point: {training_point}")
+            self.log(f"Cost: {cost}")
+
+        return basis_addition
+
+    def compress_basis(
+        self,
+        basis_addition: np.ndarray
+    ):
+        # compress the basis
+        projection = basis_addition - self.basis @ sp.linalg.solve(
+            self.overlap, self.basis.conj().T @ basis_addition
+        )
+
+        U, sigmas, Vdagger = np.linalg.svd(projection)
+        compress_add = 0
+        for s in sigmas:
+            if s > self.svd_tolerance:
+                compress_add += 1
+            else:
+                break
+
+        for j in range(compress_add):
+            self.basis_list += [U[:, j]]
+
+        self.log(f"Adding {compress_add} vector(s)")
+
+        basis_reduced = np.array(self.basis_list).T
+        if basis_reduced.shape[1] <= self.basis.shape[1]:
+            self.log(
+                "Warning: Basis did not increase in size after compression."
+            )
+        else:
+            self.basis = copy.copy(basis_reduced)
+
+        self.overlap = (self.basis.conj().T @ self.basis).real
+
+    def build_Hr_terms(self):
+        self.Hr_terms = {}
+        for pauli in self.H_terms.keys():
+            self.Hr_terms[pauli] = (
+                self.basis.conj().T @ self.H_terms[pauli] @ self.basis
+            )
+
+    def theta_to_training_point(
+        self,
+        theta
+    ):
+        param = theta_to_param(
+            theta,
+            self.selected_params,
+            self.name,
+            self.N_spin
+        )
+        training_point = param_to_paulis(
+            param,
+            self.params,
+            self.name,
+            self.N_spin
+        )
+
+        return training_point
+
+    def set_optimal(self):
+        self.opt_basis = self.basis
+        self.opt_overlap = self.basis.conj().T @ self.basis
+        self.build_Hr_terms()
+        self.opt_Hr_terms = self.Hr_terms
+
+        self.log(
+            f"Using basis found with size {self.opt_basis.shape[1]}"
+            + f" reduced from full Hilbert size of {self.size}"
+        )
+
+    def log(
+        self,
+        text: str
+    ):
+        self.output_stream.write(
+            str(datetime.datetime.now()) + ": " + text + "\n"
+        )

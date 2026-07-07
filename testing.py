@@ -1,92 +1,58 @@
-from surrogate import *
+import matplotlib.pyplot as plt
+
+from examples import *
 from openfermion.hamiltonians import fermi_hubbard
 from openfermion.transforms import jordan_wigner
+from surrogate import *
+
 
 if __name__ == "__main__":
     ###############################################################
+    # AIM = Single Impurity Anderson Model, fermi_hubbard, TFIM, TFXY,
+    # heisenberg
+    model_type = "TFIM"
+
     # Residue threshold for terminating optimization (lower means more accurate,
     # at the cost of more basis vectors)
     res_thresh = 1e-6
 
-    # For removing linear dependence in basis vectors
-    svd_tol = 1e-8
+    # max condition number of the overlap matrix. We do an SVD to try to reduce,
+    # this, but it will eventually blow up
+    max_condition = 1e9
 
-    # eigenvalue shift
-    eigen_shift = 0
+    # For removing linear dependence in basis vectors
+    svd_tol = 1e-12
+
+    # max number of states to include in degenerate ground states
+    degeneracy_truncation = 5
 
     # proportion of the Hilbert space size to look for eigenvalues in during
     # sparse computations
-    sparse_proportion = .25
+    sparse_proportion = .5
 
     # Number of sites (total for TFIM/TFXY/Heisenberg, per spin for fermi_hubbard, AIM)
     N = 4
+    NI = 1
+    NB = N - NI
 
     # None or Between 0 and N (2*N for AIM, fermi_hubbard), N for
     # TFIM/TFXY/Heisenberg. Can be tuple for (n_up, n_down) for AIM,
     # fermi_hubbard
     ps = None
 
-    # AIM = Single Impurity Anderson Model, fermi_hubbard, TFIM, TFXY,
-    # heisenberg
-    model_type = "fermi_hubbard"
-
     # Parameter grid values for training grid
     mu = np.linspace(-5.0, 5.0, 20)
     mu_2 = np.linspace(-5.0, 5.0, 20)
+    mu_chem = 0.5
+    U = 4.0
 
     if model_type == "fermi_hubbard":
         mu_2 = np.linspace(1.0, 5.0, 20)
 
-    if model_type == "TFIM":
-        model_parameters = {
-            "J": 1,
-            "h": 1,
-            "periodic": False,
-        }
-    elif model_type == "TFXY":
-        model_parameters = {
-            "Jx": 1,
-            "Jy": 1,
-            "h": 1,
-            "periodic": False,
-        }
-    elif model_type == "heisenberg":
-        model_parameters = {
-            "Jx": 1,
-            "Jy": 1,
-            "Jz": 1,
-            "h": 1,
-            "periodic": False,
-        }
-    elif model_type == "fermi_hubbard":
-        mu_chem = 0.5
-        model_parameters = {
-            "t": 1.0,
-            "mu": 1.0,
-            "U": 1.0,
-            "periodic": False,
-        }
-    elif model_type == "AIM":
-        U = 4.0
-        NI = 1
-        NB = N - NI
-        model_parameters = {
-            "NI": NI,
-            "NB": NB,
-            "U": U,
-            "ei": [0.0] * NI,
-            "vb": np.array([0.01] * ((NB) % 2) + [1.0] * (NB - (NB) % 2)),
-            "eb": np.array(
-                [0.0] * ((NB) % 2)
-                + [1.0] * ((NB - (NB) % 2) // 2)
-                + [-1.0] * ((NB - (NB) % 2) // 2)
-            ),
-            "mu": U / 2,
-            "periodic": False,
-        }
+    H_paulis = get_model_paulis(model_type, N)
 
-    model_paulis = model_to_paulis(N, model_type, model_parameters)
-    H_paulis = [t[0] for t in model_paulis]
+    model_params = get_model_parameters(model_type)
+    model_parameters = get_model_base_parameters(model_type, N)
     H_paulis_order = {}
 
     for i, pauli in enumerate(H_paulis):
@@ -94,7 +60,7 @@ if __name__ == "__main__":
 
     ### Any training grid can be used here, this is an example of the model
     # being parameterized over two parameters
-    training_grid = []
+    training_grid = np.array([])
     for m1 in mu:
         for m2 in mu_2:
             if model_type == "TFIM":
@@ -125,6 +91,7 @@ if __name__ == "__main__":
                 )
             model_paulis = model_to_paulis(N, model_type, model_parameters)
             params = np.zeros(len(H_paulis), dtype=tuple)
+            print(model_parameters)
 
             for t in model_paulis:
                 try:
@@ -136,7 +103,7 @@ if __name__ == "__main__":
             paulis_dict = {}
             for t in model_paulis:
                 paulis_dict[t[0]] = t[1]
-            training_grid.append(paulis_dict)
+            training_grid = np.append(training_grid, paulis_dict)
 
     if model_type == "AIM" or model_type == "fermi_hubbard":
         surrogate_N = 2 * N
@@ -146,16 +113,20 @@ if __name__ == "__main__":
         surrogate_ord = "uudd"
     model = SurrogateModel(
         model_type,
-        surrogate_N,
-        H_paulis,
-        training_grid,
+        #model_params,
+        ('J', 'h'),
+        N,
         particle_selection=ps,
         basis_ordering=surrogate_ord,
         sparse=True,
-        log=False
+        max_condition=max_condition,
+        svd_tolerance=svd_tol,
+        sparse_proportion=sparse_proportion,
+        degeneracy_truncation=degeneracy_truncation,
+        processes=1
     )
 
-    model.build_terms(processes=1)
+    model.build_terms()
     print("Done building terms")
 
     # Calculate the real solutions for testing (only for 2D parameter grids)
@@ -177,16 +148,10 @@ if __name__ == "__main__":
             solution_grid[i, j] = evals[0]
 
     basis = model.optimize(
-        solution_grid=(
-            solution_grid,
-            mu,
-        ),  # Comment this out if no solution grid is desired
-        svd_tolerance=svd_tol,
-        residue_threshold=res_thresh,
-        residue_graphing=True,
-        eigen_shift=eigen_shift,
-        sparse_proportion=sparse_proportion,
-        processes=1
+        #EnergyConvergenceCostFunction(model, training_grid, 1e-8),
+        VarianceCostFunction(model, training_grid, 1e-8),
+        #ResidualCostFunction(model, (-5.0, -5.0), [(-5.0, 5.0), (-5.0, 5.0)], 1000, 10),
+        (-5.0, -5.0)
     )
     print("Basis Size", basis.shape[1])
 

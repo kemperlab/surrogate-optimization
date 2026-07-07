@@ -5,7 +5,7 @@ from costfunction import CostFunctionInterface
 from dataclasses import dataclass
 from gaussian import *
 from pauli import *
-from surrogate2 import SurrogateModel
+from surrogate import SurrogateModel
 
 @dataclass
 class EvaluatedPoint:

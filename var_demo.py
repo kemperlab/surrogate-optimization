@@ -1,11 +1,14 @@
 import numpy as np
 import scipy.sparse as sps
 import matplotlib.pyplot as plt
+import datetime
 
 from advisor import SurrogateAdvisor
-from examples import ResidualCostFunction, VarianceCostFunction
+from examples import ResidualCostFunction, VarianceCostFunction2
 from pauli import *
 from surrogate import SurrogateModel
+
+from gep_advisor import GEPAdvisor
 
 MODEL = "AIM"
 N = 4
@@ -14,6 +17,14 @@ NB = N - NI
 PARAM_BOUNDS = ((-5.0, 5.0), (-5.0, 5.0))
 SELECTED_PARAMS = ("vb", "eb")
 INIT_THETA = (PARAM_BOUNDS[0][0], PARAM_BOUNDS[1][0])
+"""
+N = 6
+NI = 1
+NB = N - NI
+PARAM_BOUNDS = ((-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0))
+SELECTED_PARAMS = ("U", "vb1", "vb2", "vb3", "eb2", "eb3")
+INIT_THETA = (PARAM_BOUNDS[0][0], PARAM_BOUNDS[1][0], PARAM_BOUNDS[2][0], PARAM_BOUNDS[3][0], PARAM_BOUNDS[4][0], PARAM_BOUNDS[5][0])
+"""
 
 sparse_proportion = .2
 
@@ -32,88 +43,53 @@ for i, pauli in enumerate(H_paulis):
 model = SurrogateModel(
     MODEL,
     SELECTED_PARAMS,
-    N
+    N,
+    processes=1
 )
 
 model2 = SurrogateModel(
     MODEL,
     SELECTED_PARAMS,
-    N
+    N,
+    processes=1
 )
 
 model.build_terms()
 model2.build_terms()
 print("Built terms")
 
-"""
 mu = np.linspace(-5.0, 5.0, 20)
 mu_2 = np.linspace(-5.0, 5.0, 20)
 
-training_grid = np.array([])
-for m1 in mu:
-    for m2 in mu_2:
-        if MODEL == "TFIM":
-            BASE_PARAMS2["J"] = m1
-            BASE_PARAMS2["h"] = m2
-        elif MODEL == "TFXY":
-            BASE_PARAMS2["Jx"] = m1
-            BASE_PARAMS2["Jy"] = m1
-            BASE_PARAMS2["h"] = m2
-        elif MODEL == "heisenberg":
-            BASE_PARAMS2["Jx"] = m1
-            BASE_PARAMS2["Jy"] = m1
-            BASE_PARAMS2["Jz"] = m2
-            BASE_PARAMS2["h"] = 0.1
-        elif MODEL == "fermi_hubbard":
-            BASE_PARAMS2["t"] = m1
-            BASE_PARAMS2["mu"] = mu_chem
-            BASE_PARAMS2["U"] = m2
-        elif MODEL == "AIM":
-            BASE_PARAMS2["vb"] = np.array(
-                [0.01] * ((NB) % 2) + [m1] * (NB - (NB) % 2)
-            )
-
-            BASE_PARAMS2["eb"] = np.array(
-                [0.0] * ((NB) % 2)
-                + [m2] * ((NB - (NB) % 2) // 2)
-                + [-m2] * ((NB - (NB) % 2) // 2)
-            )
-        model_paulis2 = model_to_paulis(N, MODEL, BASE_PARAMS2)
-        params = np.zeros(len(H_paulis), dtype=tuple)
-
-        for t in model_paulis2:
-            try:
-                params[H_paulis_order[t[0]]] = t[1]
-            except:
-                raise Exception("Failed to generate all terms in model")
-
-        model_paulis2 = list(zip(H_paulis, params))
-        paulis_dict = {}
-        for t in model_paulis2:
-            paulis_dict[t[0]] = t[1]
-        training_grid = np.append(training_grid, paulis_dict)
+training_grid = []
 """
+for i, m1 in enumerate(mu):
+    for j, m2 in enumerate(mu_2):
+        training_grid.append(model.theta_to_training_point((m1, m2)))
+"""
+training_grid = np.array(training_grid)
 
-cfi = ResidualCostFunction(
+cfi = VarianceCostFunction2(
     model,
+    1e-9,
     INIT_THETA,
     PARAM_BOUNDS,
     1000,
     10
 )
-#cfi = VarianceCostFunction(model, np.zeros((1, 1)), 1e-8)
-cfi2 = ResidualCostFunction(
+cfi2 = VarianceCostFunction2(
     model2,
+    1e-9,
     INIT_THETA,
     PARAM_BOUNDS,
     1000,
     10
 )
-"""
-cfi2 = VarianceCostFunction(model, training_grid, 1e-9)
-"""
 
+t1 = datetime.datetime.now()
 first_cost = model.init_optimize(cfi, INIT_THETA)
+
+model.build_Hr_terms()
 
 iteration_costs = [[first_cost]]
 
@@ -121,16 +97,17 @@ chosen = [INIT_THETA]
 
 for i in range(100):
     print(f"It {i}")
+    cfi.preiteration()
     advisor = SurrogateAdvisor(
         model,
         cfi,
         PARAM_BOUNDS,
-        log_sample_size=4
+        log_sample_size=5
     )
 
     advisor.sobol_sample()
 
-    grid_points = 20
+    grid_points = 40
     points = np.zeros((grid_points, grid_points))
     fake_points = np.zeros((grid_points, grid_points))
     for y, h in enumerate(np.linspace(-5.0, 5.0, grid_points)):
@@ -196,7 +173,7 @@ for i in range(100):
         s=20,
         label="Chosen Points",
     )
-    fig.colorbar(im2, ax=ax2)
+    fig.colorbar(im1, ax=ax2)
     ax2.set_title("Cost from Guassian Process")
     ax2.set_xlabel(SELECTED_PARAMS[0])
     ax2.set_ylabel(SELECTED_PARAMS[1])
@@ -221,10 +198,11 @@ for i in range(100):
 
     basis_addition = model.find_basis_addition([new_cost], [new_training_point])
     model.compress_basis(basis_addition)
+    model.build_Hr_terms()
 
     iteration_costs.append([new_cost])
 
-    if new_cost < 1e-6:
+    if new_cost < 1e-3:
         print(model.basis.shape)
         break
 
@@ -232,15 +210,28 @@ for i in range(100):
     #    break
 
 model.set_optimal()
+print(model.basis.shape)
+t2 = datetime.datetime.now()
 model2.optimize(
     cfi2,
     INIT_THETA
 )
+t3 = datetime.datetime.now()
+
+print("Gaussian")
+print("Basis Size:", model.opt_basis.shape[1])
+print("Full Hilbert Size:", model.size)
+print("Time:", t2 - t1)
+print("Real")
+print("Basis Size:", model2.opt_basis.shape[1])
+print("Full Hilbert Size:", model2.size)
+print("Time:", t3 - t2)
+
 ### Testing the surrogate model against random parameters
 errors = []
 errors2 = []
 all_ps = []
-for i in range(200):
+for i in range(10):
     H_full = np.zeros((model.size, model.size), dtype=complex)
 
     if MODEL == "TFIM":
@@ -344,18 +335,18 @@ for i in range(200):
 
     print(parameters)
     print("REAL")
-    test_evals, test_evecs = model2.solve(parameters)
-    print("Real", evals[0])
-    print("Approx", test_evals[0])
-    print("GAUSSIAN")
-    if abs(evals[0]) < 1e-12:
-        errors2.append(np.abs(evals[0] - test_evals[0]))
-    else:
-        errors2.append(np.abs(evals[0] - test_evals[0]) / np.abs(evals[0]))
-    print(
-        "Relative Error",
-        errors2[-1],
-    )
+    #test_evals, test_evecs = model2.solve(parameters)
+    #print("Real", evals[0])
+    #print("Approx", test_evals[0])
+    #print("GAUSSIAN")
+    #if abs(evals[0]) < 1e-12:
+    #    errors2.append(np.abs(evals[0] - test_evals[0]))
+    #else:
+    #    errors2.append(np.abs(evals[0] - test_evals[0]) / np.abs(evals[0]))
+    #print(
+    #    "Relative Error",
+    #    errors2[-1],
+    #)
     print()
     test_evals, test_evecs = model.solve(parameters)
     print("Real", evals[0])
