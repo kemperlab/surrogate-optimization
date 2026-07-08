@@ -1,43 +1,41 @@
 ################################################################################
-# HPC TEST 1
+# MOCK TEST 1
 # 
-# TEN SITE ANDERSON IMPURITY MODEL
+# SIX SITE ANDERSON IMPURITY MODEL
 ################################################################################
 
 import datetime
 import matplotlib.pyplot as plt
 
-from examples import ResidualCostFunction, VarianceCostFunction2
+from examples import (
+    ResidualCostFunction,
+    VarianceCostFunction2,
+    VarianceCostFunction
+)
 from surrogate import *
 from testing_interface import *
 
 #### MODEL SETUP ####
 if __name__ == "__main__":
     TEST_START = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    TEST_NAME = "HPC_TEST1"
+    TEST_NAME = "MOCK_TEST1"
     SAVE_FOLDER = TEST_NAME
-    PROCESSES = 1
+    PROCESSES = 4
 
     SEED = 4
 
     MODEL_NAME = "AIM"
-    MODEL_N = 10
-    SELECTED_PARAMETERS = (
-        "U",
-        "vb1", "vb2", "vb3", "vb4", "vb5",
-        "eb2", "eb3", "eb4", "eb5"
-    )
+    MODEL_N = 6
+    SELECTED_PARAMETERS = ("U", "vb1", "vb2", "vb3", "eb2", "eb3")
     PARAMETER_SPACE = (
         (0.01, 5.0),
-        (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0),
-        (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0)
+        (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0),
+        (-5.0, 5.0), (-5.0, 5.0)
     )
     INIT_THETA = (
         PARAMETER_SPACE[0][0],
         PARAMETER_SPACE[1][0],PARAMETER_SPACE[2][0],PARAMETER_SPACE[3][0],
-        PARAMETER_SPACE[4][0],PARAMETER_SPACE[5][0],
-        PARAMETER_SPACE[6][0],PARAMETER_SPACE[7][0],PARAMETER_SPACE[8][0],
-        PARAMETER_SPACE[9][0]
+        PARAMETER_SPACE[4][0],PARAMETER_SPACE[5][0]
     )
     PARTICLE_SELECTION = (MODEL_N // 2, MODEL_N // 2)
     SPARSE = True
@@ -48,8 +46,8 @@ if __name__ == "__main__":
     LOG_FILENAME = f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}.log"
 
     #### COST FUNCTION SETUP ####
-    TOTAL_SOBOL_POINTS = 100_000
-    POINTS_PER_ITERATION = 100
+    TOTAL_SOBOL_POINTS = 1000
+    POINTS_PER_ITERATION = 10
 
     ### VARIANCE COST FUNCTION SETUP ###
     VARIANCE_THRESHOLD = 1e-9
@@ -57,6 +55,7 @@ if __name__ == "__main__":
     ### RESIDUAL COST FUNCTION SETUP ###
     RESIDUAL_THRESHOLD = 1e-9
 
+    #### RUN ####
     with open(LOG_FILENAME, "w") as log_stream:
         model = SurrogateModel(
             MODEL_NAME,

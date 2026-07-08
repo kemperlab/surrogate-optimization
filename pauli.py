@@ -207,13 +207,13 @@ def gen_from_pauli_string(
 ) -> np.ndarray | sps.csc_matrix:
     if pauli_string == "":
         if sparse:
-            mat = sps.eye(2**N, format="csc", dtype=complex)
+            mat = sps.eye(2**N, format="csc", dtype=float)
             if particle_selection is not None:
                 basis = get_ps_basis(particle_selection, N, ordering=ordering)
                 mat = mat[:, basis][basis]
             return mat
         else:
-            mat = np.eye(2**N, dtype=complex)
+            mat = np.eye(2**N, dtype=float)
             if particle_selection is not None:
                 basis = get_ps_basis(particle_selection, N, ordering=ordering)
                 mat = mat[:, basis][basis]
@@ -221,13 +221,13 @@ def gen_from_pauli_string(
     else:
         op = QubitOperator(pauli_string)
         if sparse:
-            mat = get_sparse_operator(op, N).tocsc()
+            mat = get_sparse_operator(op, N).tocsc().astype(float)
             if particle_selection is not None:
                 basis = get_ps_basis(particle_selection, N, ordering=ordering)
                 mat = mat[:, basis][basis]
             return mat
         else:
-            mat = get_sparse_operator(op, N).toarray()
+            mat = get_sparse_operator(op, N).toarray().astype(float)
 
             if particle_selection is not None:
                 basis = get_ps_basis(particle_selection, N, ordering=ordering)
@@ -344,7 +344,7 @@ def param_to_paulis(
         label : theta_i for label, theta_i in zip(params, theta)
     })
 
-    return{p: c for p, c in paulis}
+    return{p: c.real for p, c in paulis}
 
 def get_model_paulis(model_type, N):
     if model_type == "TFIM":
@@ -534,7 +534,9 @@ def theta_to_param(theta, selected_params, model_type, N):
         NI = 1
         NB = N - NI
         param = [NI, NB]
-        if len(theta) == 6:
+        
+        # manual override for test cases
+        if len(theta) == 6: #(theta == ("U", "vb1", "vb2", "vb3", "eb2", "eb3").all()):
             param = [
                 NI, NB,
                 theta[0], [0.0],
@@ -542,6 +544,26 @@ def theta_to_param(theta, selected_params, model_type, N):
                 [0, theta[4], theta[5], -theta[4], -theta[5]],
                 theta[0] / 2
             ]
+
+            return tuple(param)
+
+        if len(theta) == 10:
+            param = [
+                NI, NB,
+                theta[0], [0.0],
+                [
+                    theta[1],
+                    theta[2], theta[3], theta[4], theta[5],
+                    theta[2], theta[3], theta[4], theta[5]
+                ],
+                [
+                    0,
+                    theta[6], theta[7], theta[8], theta[9],
+                    -theta[6], -theta[7], -theta[8], -theta[9]
+                ],
+                theta[0] / 2
+            ]
+
             return tuple(param)
 
         if "U" in selected_params:
@@ -608,12 +630,13 @@ def get_op_dict(jw_hamiltonian, N, sparse=True, make_ops=True):
             op = pauli_string
             op_dict[pauli_string] = coeff.real
     return op_dict
+
 def get_particle_selected_basis(
     s: int | tuple[int], N: int, ordering="udud"
 ) -> np.ndarray:
     """
-    Get the particle-number (and possibly spin) sector basis for a system of N sites.
-    If the basis file does not exist, it will be calculated and saved.
+    Get the particle-number (and possibly spin) sector basis for a system of N
+    sites. If the basis file does not exist, it will be calculated and saved.
     Args:
         s (int | tuple[int]): Number of particles (or tuple of spin-up and
             spin-down particles).
@@ -659,7 +682,9 @@ def get_particle_selected_basis(
                         n |= 1 << (N - 1 - pos)
                     first_half[i] = n
 
-                second_half = np.zeros(comb(len(odd_positions), s[1]), dtype=np.int64)
+                second_half = np.zeros(
+                    comb(len(odd_positions), s[1]), dtype=np.int64
+                )
                 for i, ones_idx in enumerate(
                     combinations(range(len(odd_positions)), s[1])
                 ):
@@ -670,7 +695,8 @@ def get_particle_selected_basis(
                     second_half[i] = n
 
                 # Combine even- and odd-site patterns
-                basis = np.zeros(len(first_half) * len(second_half), dtype=np.int64)
+                basis = np.zeros(len(first_half) * len(second_half),
+                    dtype=np.int64)
                 idx = 0
                 for fh in first_half:
                     for sh in second_half:
@@ -687,7 +713,8 @@ def get_particle_selected_basis(
                     raise ValueError("N must be even for spin-protected basis.")
                 if (s[0] > N // 2) or (s[1] > N // 2):
                     raise ValueError(
-                        "Number of spin-up or spin-down particles exceeds half the system size."
+                        "Number of spin-up or spin-down particles exceeds half "
+                        + "the system size."
                     )
 
                 half = N // 2
@@ -735,26 +762,3 @@ def get_particle_selected_basis(
             basis = np.sort(basis)
             np.savetxt(basis_file, basis, fmt="%d")
             return basis
-if __name__ == "__main__":
-    model_parameters = {
-        "NI": 1,  # Number of impurity sites (spatial orbitals)
-        "NB": 5,  # Number of bath sites (spatial orbitals)
-        "U": 4.0,  # Hubbard U
-        "J": 0.0,  # Hund's coupling (only used for NI>1)
-        "mu": 2.0,  # Chemical potential (only used for NI=3 to ensure half-filling)
-        "ei": [0.0],  # Impurity on-site energies
-        "eb": np.array([[0.0, 1.0, 2.0, -1.0, -2.0]]),  # Bath on-site energies
-        "vb": np.array([[0.5, 1.0, 1.1, 1.0, 1.1]]),  # Impurity-bath hybridization
-    }
-    jw_h = AIM_hamiltonian_JW(model_parameters)
-    N = 2 * (model_parameters["NI"] + model_parameters["NB"])
-    op_dict = get_op_dict(jw_h, N, sparse=True, make_ops=True)
-
-    H = sum(c[0]*c[1] for (s, c) in op_dict.items())
-
-
-    ps_basis = get_particle_selected_basis(s=(3,3), N=2 * (model_parameters["NI"] + model_parameters["NB"]))
-    print(H[ps_basis[:, None], ps_basis[None, :]].real.shape)
-    evals, evecs = spla.eigsh(H[ps_basis[:, None], ps_basis[None, :]].real, k=int(0.5*400), which="SA")
-
-    print([e for e in evals[:10]])

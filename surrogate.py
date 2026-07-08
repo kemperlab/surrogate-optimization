@@ -44,6 +44,7 @@ class SurrogateModel:
     iteration_costs: list
     pp: ProcessPool | None
     save_folder: str | None
+    keep_on_disk: bool
 
     def __init__(
         self,
@@ -59,7 +60,8 @@ class SurrogateModel:
         degeneracy_truncation: int = 5,
         processes: int = 1,
         output_stream: io.IOBase = sys.stdout,
-        save_folder: str | None = "."
+        save_folder: str | None = ".",
+        keep_on_disk = False
     ):
         self.name = name
         self.params = get_model_parameters(self.name)
@@ -87,6 +89,14 @@ class SurrogateModel:
         self.basis = None
         self.Hr_terms = None
         self.iteration_costs = None
+        self.basis_growth = None
+
+        if keep_on_disk and not save_folder:
+            raise Exception(
+                "A save folder must to specfied to keep terms on disk"
+            )
+        else:
+            self.keep_on_disk = keep_on_disk
 
         if save_folder:
             self.save_folder = save_folder + f"/{self.name}_{self.N_spin}"
@@ -137,6 +147,8 @@ class SurrogateModel:
         self.log(f"Paulis: {self.pauli_strings}")
         self.log(f"N: {self.N_spin}")
         self.log(f"Selected Parameters: {self.selected_params}")
+        self.log(f"Particle Selection: {self.particle_selection}")
+        self.log(f"Hilbert Space Size: {self.size}")
 
     def reset(self):
         self.log("Resetting model...")
@@ -148,6 +160,7 @@ class SurrogateModel:
         self.basis = None
         self.Hr_terms = None
         self.iteration_costs = None
+        self.basis_growth = None
 
     def build_terms(
         self,
@@ -158,6 +171,9 @@ class SurrogateModel:
         if self.save_folder:
             self.log(f"Retrieving terms from {self.save_folder}")
 
+            if self.keep_on_disk:
+                self.log("Terms will be kept on disk")
+
             needed_terms = []
 
             for pauli_string in self.pauli_strings:
@@ -166,7 +182,13 @@ class SurrogateModel:
                 else:
                     filename = self.save_folder + f"/{pauli_string}.npz"
                 try:
-                    if self.sparse:
+                    if self.keep_on_disk:
+                        if not os.path.exists(filename):
+                            self.log(f"Failed to locate {filename}")
+                            needed_terms.append(pauli_string)
+                        else:
+                            self.log(f"Found {filename} on disk")
+                    elif self.sparse:
                         self.H_terms[pauli_string] = sp.sparse.load_npz(
                             filename)
                         self.log(f"Retrieved {filename}")
@@ -184,33 +206,85 @@ class SurrogateModel:
 
         if self.processes == 1:
             for pauli_string in needed_terms:
-                self.H_terms[pauli_string] = gen_from_pauli_string(
+                H_term = gen_from_pauli_string(
                     pauli_string,
                     self.N,
                     self.particle_selection,
                     ordering=self.basis_ordering,
                     sparse=self.sparse
                 )
+                if self.keep_on_disk:
+                    if pauli_string == "":
+                        filename = self.save_folder + "/I.npz"
+                    else:
+                        filename = self.save_folder + f"/{pauli_string}.npz"
+                    if self.sparse:
+                        sp.sparse.save_npz(filename, H_term)
+                    else:
+                        np.savez_compressed(filename, H_term)
+                else:
+                    self.H_terms[pauli_string] = H_term
 
         else:
+            def gen_and_save(
+                pauli_string,
+                N,
+                particle_selection,
+                ordering,
+                sparse
+            ):
+                H_term = gen_from_pauli_string(
+                    pauli_string,
+                    N,
+                    particle_selection,
+                    ordering,
+                    sparse
+                )
+
+                if pauli_string == "":
+                    filename = self.save_folder + "/I.npz"
+                else:
+                    filename = self.save_folder + f"/{pauli_string}.npz"
+                if self.sparse:
+                    sp.sparse.save_npz(filename, H_term)
+                else:
+                    np.savez_compressed(filename, H_term)
+
             batch_size = int(np.ceil(len(needed_terms) / self.processes))
-            H_terms_list = list(self.pp.map(
-                partial(
-                    gen_from_pauli_string,
-                    N=self.N,
-                    particle_selection=self.particle_selection,
-                    ordering=self.basis_ordering,
-                    sparse=self.sparse
-                ),
-                needed_terms,
-                chunksize=batch_size
-            ))
-            for pauli_string, H_term in zip(needed_terms, H_terms_list):
-                self.H_terms[pauli_string] = H_term
+
+            if self.keep_on_disk:
+                list(self.pp.map(
+                    partial(
+                        gen_and_save,
+                        N=self.N,
+                        particle_selection=self.particle_selection,
+                        ordering=self.basis_ordering,
+                        sparse=self.sparse
+                    ),
+                    needed_terms,
+                    chunksize=batch_size
+                ))
+            else:
+                H_terms_list = list(self.pp.map(
+                    partial(
+                        gen_from_pauli_string,
+                        N=self.N,
+                        particle_selection=self.particle_selection,
+                        ordering=self.basis_ordering,
+                        sparse=self.sparse
+                    ),
+                    needed_terms,
+                    chunksize=batch_size
+                ))
+                for pauli_string, H_term in zip(needed_terms, H_terms_list):
+                    self.H_terms[pauli_string] = H_term
 
         self.log("Built terms")
 
-        if self.save_folder and len(needed_terms) != 0:
+        if (
+            self.save_folder and len(needed_terms) != 0
+            and not self.keep_on_disk
+        ):
             for pauli_string in needed_terms:
                 if pauli_string == "":
                     filename = self.save_folder + "/I.npz"
@@ -218,9 +292,11 @@ class SurrogateModel:
                     filename = self.save_folder + f"/{pauli_string}.npz"
                 if self.sparse:
                     sp.sparse.save_npz(filename, self.H_terms[pauli_string])
-                else:
+                elif not self.keep_on_disk:
                     np.savez_compressed(filename, self.H_terms[pauli_string])
                 self.log(f"Saving term in {filename}")
+        elif self.keep_on_disk and len(needed_terms) != 0:
+            self.log(f"Saved {needed_terms}")
 
     def init_optimize(
         self,
@@ -235,8 +311,8 @@ class SurrogateModel:
             self.build_terms()
         
         # cost for each iteration
-        self.basis = np.zeros((self.size, 0), dtype=complex)
-        self.overlap = np.zeros((0, 0), dtype=complex)
+        self.basis = np.zeros((self.size, 0), dtype=float)
+        self.overlap = np.zeros((0, 0), dtype=float)
 
         H_full = self.build_H_full(init_training_point)
         if self.sparse:
@@ -254,6 +330,7 @@ class SurrogateModel:
         self.basis = np.array(self.basis_list).T
         self.overlap = (self.basis.conj().T @ self.basis).real
         self.build_Hr_terms()
+        self.basis_growth.append(1)
 
         # initial iteration preiteration
         cfi.preiteration()
@@ -278,6 +355,7 @@ class SurrogateModel:
         init_param_point: dict,
     ):
         self.iteration_costs = []
+        self.basis_growth = []
 
         if type(self.basis) == type(None):
             # no basis yet, we need to initialize
@@ -300,14 +378,14 @@ class SurrogateModel:
     def solve(
         self,
         training_point: dict
-    ) -> complex:
+    ) -> float:
         """
         Approximate the eigenvalues and eigenvectors for a given set of
         parameters
 
         Parameters
         ----------
-        parameters : `list[complex]`
+        parameters : `list[float]`
             The parameters to approximate eigenvalues and eigenvectors for
         
         Returns
@@ -352,11 +430,9 @@ class SurrogateModel:
             The matrix in the full Hilbert space
         """
 
-        H_full = np.zeros((self.size, self.size), dtype=complex)
+        H_full = np.zeros((self.size, self.size), dtype=float)
         for pauli in self.pauli_strings:
-            H_full += (
-                training_point[pauli] * self.H_terms[pauli]
-            )
+            H_full += training_point[pauli] * self.get_H_term(pauli)
 
         return H_full
 
@@ -364,7 +440,7 @@ class SurrogateModel:
         self,
         training_point: dict,
     ) -> np.ndarray:
-        Hr = np.zeros((self.basis.shape[1], self.basis.shape[1]), dtype=complex)
+        Hr = np.zeros((self.basis.shape[1], self.basis.shape[1]), dtype=float)
         for pauli in self.pauli_strings:
             Hr += training_point[pauli] * self.Hr_terms[pauli]
 
@@ -493,6 +569,8 @@ class SurrogateModel:
         for j in range(compress_add):
             self.basis_list += [U[:, j]]
 
+        self.basis_growth.append(compress_add)
+
         self.log(f"Adding {compress_add} vector(s)")
 
         basis_reduced = np.array(self.basis_list).T
@@ -507,9 +585,10 @@ class SurrogateModel:
 
     def build_Hr_terms(self):
         self.Hr_terms = {}
-        for pauli in self.H_terms.keys():
+        for pauli in self.pauli_strings:
+            H_term = self.get_H_term(pauli)
             self.Hr_terms[pauli] = (
-                self.basis.conj().T @ self.H_terms[pauli] @ self.basis
+                self.basis.conj().T @ H_term @ self.basis
             )
 
     def theta_to_training_point(
@@ -541,6 +620,23 @@ class SurrogateModel:
             f"Using basis found with size {self.opt_basis.shape[1]}"
             + f" reduced from full Hilbert size of {self.size}"
         )
+
+    def get_H_term(
+        self,
+        pauli_string
+    ):
+        if self.keep_on_disk:
+            if pauli_string == "":
+                filename = self.save_folder + "/I.npz"
+            else:
+                filename = self.save_folder + f"/{pauli_string}.npz"
+            if self.sparse:
+                H_term = sp.sparse.load_npz(filename)
+            else:
+                H_term = np.load(filename)["arr_0"]
+            return H_term
+        else:
+            return self.H_terms[pauli_string]
 
     def log(
         self,
