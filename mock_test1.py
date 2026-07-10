@@ -1,19 +1,23 @@
 ################################################################################
-# MOCK TEST 1
+# HPC TEST 1
 # 
-# SIX SITE ANDERSON IMPURITY MODEL
+# TEN SITE ANDERSON IMPURITY MODEL
 ################################################################################
 
 import datetime
+import os
 import matplotlib.pyplot as plt
+from pathos.multiprocessing import ProcessPool
+import numpy as np
+import scipy as sp
 
 from examples import (
     ResidualCostFunction,
     VarianceCostFunction2,
     VarianceCostFunction
 )
-from surrogate import *
-from testing_interface import *
+from surrogate import SurrogateModel
+from testing_interface import Tester
 
 #### MODEL SETUP ####
 if __name__ == "__main__":
@@ -21,6 +25,7 @@ if __name__ == "__main__":
     TEST_NAME = "MOCK_TEST1"
     SAVE_FOLDER = TEST_NAME
     PROCESSES = 4
+    NUM_TESTS = 200
 
     SEED = 4
 
@@ -56,143 +61,174 @@ if __name__ == "__main__":
     RESIDUAL_THRESHOLD = 1e-9
 
     #### RUN ####
-    with open(LOG_FILENAME, "w") as log_stream:
-        model = SurrogateModel(
-            MODEL_NAME,
-            SELECTED_PARAMETERS,
-            MODEL_N,
-            particle_selection = PARTICLE_SELECTION,
-            sparse=SPARSE,
-            #output_stream=log_stream,
-            save_folder = SAVE_FOLDER,
-            keep_on_disk = True,
-            processes = PROCESSES
-        )
+    pp = ProcessPool(nodes=PROCESSES)
 
-        model.build_terms()
+    model = SurrogateModel(
+        MODEL_NAME,
+        SELECTED_PARAMETERS,
+        MODEL_N,
+        particle_selection = PARTICLE_SELECTION,
+        sparse=SPARSE,
+        save_folder = SAVE_FOLDER,
+        keep_on_disk = True,
+        processes = PROCESSES
+    )
 
-        sobol_gen = sp.stats.qmc.Sobol(len(PARAMETER_SPACE),
-            rng=np.random.default_rng(SEED))
-        # round up to the nearest power of two
-        power = int(np.log2(TOTAL_SOBOL_POINTS) + 0.5)
-        points = np.array(sobol_gen.random_base2(power))
-        for i, point in enumerate(points):
-            for coord, param_range in enumerate(PARAMETER_SPACE):
-                points[i][coord] = (
-                    (param_range[1] - param_range[0]) * points[i][coord]
-                    + param_range[0]
-                )
+    model.build_terms()
 
-        training_grid = []
-        
-        for point in points:
-            training_grid.append(model.theta_to_training_point(point))
-        training_grid = np.array(training_grid, dtype=dict)
+    model.log("Generating test points...")
 
-        model.log("Training grid generated")
+    tester = Tester(
+        model,
+        PARAMETER_SPACE,
+        processes = PROCESSES,
+        num_tests = NUM_TESTS,
+        seed = SEED + 1
+    )
 
-        var_training_cf = VarianceCostFunction(
-            model,
-            training_grid,
-            VARIANCE_THRESHOLD
-        )
+    model.log("Test points generated")
+    model.log("Generating training grid...")
 
-        var_cf = VarianceCostFunction2(
-            model,
-            VARIANCE_THRESHOLD,
-            INIT_THETA,
-            PARAMETER_SPACE,
-            TOTAL_SOBOL_POINTS,
-            POINTS_PER_ITERATION,
-            seed = SEED
-        )
+    sobol_gen = sp.stats.qmc.Sobol(len(PARAMETER_SPACE),
+        rng=np.random.default_rng(SEED))
+    # round up to the nearest power of two
+    power = int(np.log2(TOTAL_SOBOL_POINTS) + 0.5)
+    points = np.array(sobol_gen.random_base2(power))
+    for i, point in enumerate(points):
+        for coord, param_range in enumerate(PARAMETER_SPACE):
+            points[i][coord] = (
+                (param_range[1] - param_range[0]) * points[i][coord]
+                + param_range[0]
+            )
 
-        res_cf = ResidualCostFunction(
-            model,
-            RESIDUAL_THRESHOLD,
-            INIT_THETA,
-            PARAMETER_SPACE,
-            TOTAL_SOBOL_POINTS,
-            POINTS_PER_ITERATION,
-            seed = SEED
-        )
+    batch_size = int(np.ceil(len(points) / PROCESSES))
+    training_grid = list(pp.map(
+        model.theta_to_training_point,
+        points,
+        chunksize=batch_size
+    ))
+    training_grid = np.array(training_grid, dtype=dict)
 
-        sob_cf = VarianceCostFunction2(
-            model,
-            VARIANCE_THRESHOLD,
-            INIT_THETA,
-            PARAMETER_SPACE,
-            TOTAL_SOBOL_POINTS,
-            1,
-            seed = SEED
-        )
+    model.log("Training grid generated")
 
-        model.optimize(var_training_cf, INIT_THETA)
+    var_training_cf = VarianceCostFunction(
+        model,
+        training_grid,
+        VARIANCE_THRESHOLD
+    )
 
-        vart_basis_size = model.opt_basis.shape[1]
-        vart_iterations = len(model.iteration_costs)
-        vart_basis_growth = model.basis_growth
-        vart_errors = test_model(model, PARAMETER_SPACE, 200)
+    var_cf = VarianceCostFunction2(
+        model,
+        VARIANCE_THRESHOLD,
+        INIT_THETA,
+        PARAMETER_SPACE,
+        TOTAL_SOBOL_POINTS,
+        POINTS_PER_ITERATION,
+        seed = SEED
+    )
 
-        model.reset()
+    res_cf = ResidualCostFunction(
+        model,
+        RESIDUAL_THRESHOLD,
+        INIT_THETA,
+        PARAMETER_SPACE,
+        TOTAL_SOBOL_POINTS,
+        POINTS_PER_ITERATION,
+        seed = SEED
+    )
 
-        model.optimize(var_cf, INIT_THETA)
+    sob_cf = VarianceCostFunction2(
+        model,
+        VARIANCE_THRESHOLD,
+        INIT_THETA,
+        PARAMETER_SPACE,
+        TOTAL_SOBOL_POINTS,
+        1,
+        seed = SEED
+    )
 
-        var_basis_size = model.opt_basis.shape[1]
-        var_iterations = len(model.iteration_costs)
-        var_basis_growth = model.basis_growth
-        var_errors = test_model(model, PARAMETER_SPACE, 200)
+    model.optimize(var_cf, INIT_THETA, "VarianceResults")
 
-        model.reset()
+    var_basis_size = model.opt_basis.shape[1]
+    var_iterations = len(model.iteration_costs)
+    var_basis_growth = model.basis_growth
+    var_errors = tester.test_model()
 
-        model.optimize(res_cf, INIT_THETA)
+    model.log(f"Variance Basis Size {var_basis_size}")
+    model.log(f"Variance Iterations {var_iterations}")
+    model.log(f"Variance Max Error {max(var_errors)}")
 
-        res_basis_size = model.opt_basis.shape[1]
-        res_iterations = len(model.iteration_costs)
-        res_basis_growth = model.basis_growth
-        res_errors = test_model(model, PARAMETER_SPACE, 200)
+    model.reset()
 
-        model.reset()
+    model.optimize(res_cf, INIT_THETA, "ResidualResults")
 
-        model.optimize(sob_cf, INIT_THETA)
+    res_basis_size = model.opt_basis.shape[1]
+    res_iterations = len(model.iteration_costs)
+    res_basis_growth = model.basis_growth
+    res_errors = tester.test_model()
 
-        sob_basis_size = model.opt_basis.shape[1]
-        sob_iterations = len(model.iteration_costs)
-        sob_basis_growth = model.basis_growth
-        sob_errors = test_model(model, PARAMETER_SPACE, 200)
+    model.log(f"Residual Basis Size {res_basis_size}")
+    model.log(f"Residual Iterations {res_iterations}")
+    model.log(f"Residual Max Error {max(res_errors)}")
 
-        model.log("########## RESULTS ##########")
-        model.log(f"Hilbert Space Size {model.size}")
-        model.log(f"Variance (Training Grid) Basis Size {vart_basis_size}")
-        model.log(f"Variance (Training Grid) Iterations {vart_iterations}")
-        model.log(f"Variance (Training Grid) Max Error {max(vart_errors)}")
-        model.log(f"Variance Basis Size {var_basis_size}")
-        model.log(f"Variance Iterations {var_iterations}")
-        model.log(f"Variance Max Error {max(var_errors)}")
-        model.log(f"Residual Basis Size {res_basis_size}")
-        model.log(f"Residual Iterations {res_iterations}")
-        model.log(f"Residual Max Error {max(res_errors)}")
-        model.log(f"Sobol Basis Size {sob_basis_size}")
-        model.log(f"Sobol Iterations {sob_iterations}")
-        model.log(f"Sobol Max Error {max(sob_errors)}")
-        
-        plt.semilogy(var_errors, label="Variance")
-        plt.semilogy(vart_errors, label="Variance (Training Grid)")
-        plt.semilogy(res_errors, label="Residual")
-        plt.semilogy(sob_errors, label="Sobol")
-        plt.xlabel("Test #")
-        plt.ylabel("Relative Error")
-        plt.title("Relative Errors for Each Selection Method")
-        plt.legend()
-        plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
-        plt.clf()
+    model.reset()
 
-        plt.plot(np.arange(var_iterations), var_basis_growth, label="Variance")
-        plt.plot(np.arange(vart_iterations), vart_basis_growth,
-            label="Variance (Training Grid)")
-        plt.plot(np.arange(res_iterations), res_basis_growth, label="Residual")
-        plt.xlabel("Iteration #")
-        plt.ylabel("States Added")
-        plt.title("States Added Per Iteration for Each Cost Function")
-        plt.legend()
-        plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_STATES_ADDED_{TEST_START}.svg")
+    model.optimize(sob_cf, INIT_THETA, "SobolResults")
+
+    sob_basis_size = model.opt_basis.shape[1]
+    sob_iterations = len(model.iteration_costs)
+    sob_basis_growth = model.basis_growth
+    sob_errors = tester.test_model()
+
+    model.log(f"Sobol Basis Size {sob_basis_size}")
+    model.log(f"Sobol Iterations {sob_iterations}")
+    model.log(f"Sobol Max Error {max(sob_errors)}")
+
+    model.reset()
+
+    model.optimize(var_training_cf, INIT_THETA, "VarianceTResults")
+
+    vart_basis_size = model.opt_basis.shape[1]
+    vart_iterations = len(model.iteration_costs)
+    vart_basis_growth = model.basis_growth
+    vart_errors = tester.test_model()
+
+    model.log(f"Variance (Training Grid) Basis Size {vart_basis_size}")
+    model.log(f"Variance (Training Grid) Iterations {vart_iterations}")
+    model.log(f"Variance (Training Grid) Max Error {max(vart_errors)}")
+
+    model.log("########## RESULTS ##########")
+    model.log(f"Hilbert Space Size {model.size}")
+    model.log(f"Variance (Training Grid) Basis Size {vart_basis_size}")
+    model.log(f"Variance (Training Grid) Iterations {vart_iterations}")
+    model.log(f"Variance (Training Grid) Max Error {max(vart_errors)}")
+    model.log(f"Variance Basis Size {var_basis_size}")
+    model.log(f"Variance Iterations {var_iterations}")
+    model.log(f"Variance Max Error {max(var_errors)}")
+    model.log(f"Residual Basis Size {res_basis_size}")
+    model.log(f"Residual Iterations {res_iterations}")
+    model.log(f"Residual Max Error {max(res_errors)}")
+    model.log(f"Sobol Basis Size {sob_basis_size}")
+    model.log(f"Sobol Iterations {sob_iterations}")
+    model.log(f"Sobol Max Error {max(sob_errors)}")
+    
+    plt.semilogy(var_errors, label="Variance")
+    plt.semilogy(vart_errors, label="Variance (Training Grid)")
+    plt.semilogy(res_errors, label="Residual")
+    plt.semilogy(sob_errors, label="Sobol")
+    plt.xlabel("Test #")
+    plt.ylabel("Relative Error")
+    plt.title("Relative Errors for Each Selection Method")
+    plt.legend()
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.clf()
+
+    plt.plot(np.arange(var_iterations), var_basis_growth, label="Variance")
+    plt.plot(np.arange(vart_iterations), vart_basis_growth,
+        label="Variance (Training Grid)")
+    plt.plot(np.arange(res_iterations), res_basis_growth, label="Residual")
+    plt.xlabel("Iteration #")
+    plt.ylabel("States Added")
+    plt.title("States Added Per Iteration for Each Cost Function")
+    plt.legend()
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_STATES_ADDED_{TEST_START}.svg")

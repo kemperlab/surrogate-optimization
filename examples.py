@@ -324,7 +324,7 @@ class ResidualCostFunction(CostFunctionInterface[float]):
         if self.model.sparse:
             evals, evecs = sps.linalg.eigsh(
                 H_full.real,
-                k=int(self.model.size * self.model.sparse_proportion),
+                k=int(self.model.size * self.model.sparse_proportion)+1,
                 which='SA'
             )
         else:

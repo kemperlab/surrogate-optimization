@@ -318,7 +318,7 @@ class SurrogateModel:
         if self.sparse:
             evals, evecs = sps.linalg.eigsh(
                 H_full.real,
-                k=int(self.size * self.sparse_proportion),
+                k=int(self.size * self.sparse_proportion) + 1,
                 which='SA'
             )
         else:
@@ -353,7 +353,29 @@ class SurrogateModel:
         self,
         cfi: CostFunctionInterface,
         init_param_point: dict,
+        results_name = "results"
     ):
+        if self.save_folder:
+            results_folder = f"{self.save_folder}/{results_name}"
+            if not os.path.isdir(results_folder):
+                os.mkdir(results_folder)
+            filename_basis = f"{results_folder}/opt_basis.npz"
+            filename_growth = f"{results_folder}/basis_growth.npz"
+            filename_costs = f"{results_folder}/iteration_costs"
+
+            if os.path.exists(filename_basis):
+                self.log("Loading previously created basis...")
+                self.basis = np.load(filename_basis)["arr_0"]
+                self.basis_growth = np.load(filename_growth)["arr_0"]
+                self.iteration_costs = []
+                for i in range(len(self.basis_growth)):
+                    self.iteration_costs.append(
+                        np.load(f"{filename_costs}{i}.npz")["arr_0"]
+                    )
+                self.set_optimal(results_name)
+
+                return self.opt_basis
+
         self.iteration_costs = []
         self.basis_growth = []
 
@@ -371,7 +393,7 @@ class SurrogateModel:
             if self.optimize_step(cfi):
                 break
 
-        self.set_optimal()
+        self.set_optimal(results_name)
 
         return self.opt_basis
 
@@ -501,51 +523,86 @@ class SurrogateModel:
         
         return False
 
+    def get_H_full_ground_state(
+        self,
+        training_point,
+    ):
+        H_full = self.build_H_full(training_point)
+
+        if self.sparse:
+            evals, evecs = sps.linalg.eigsh(
+                H_full.real,
+                k=int(self.size * self.sparse_proportion)+1,
+                which='SA'
+            )
+        else:
+            evals, evecs = sp.linalg.eigh(H_full)
+
+        # find degeneracy of the ground state
+        eps = 1e-10 # for comparing floating points of GSE
+        degeneracy = 0
+        for e in evals:
+            if e - evals[0] < eps:
+                degeneracy += 1
+            else:
+                break
+            if degeneracy >= self.degeneracy_truncation:
+                break
+
+        return evecs[:, 0:degeneracy]
+
+
     def find_basis_addition(
         self,
         next_costs: list,
         next_training_points: list
     ):
         basis_addition = None
+        if self.processes == 1:
+            for cost, training_point in zip(
+                next_costs,
+                next_training_points
+            ):
+                new_vecs = self.get_H_full_ground_state(training_point)
 
-        for cost, training_point in zip(
-            next_costs,
-            next_training_points
-        ):
-            H_full = self.build_H_full(training_point)
-
-            if self.sparse:
-                evals, evecs = sps.linalg.eigsh(
-                    H_full.real,
-                    k=int(self.size * self.sparse_proportion),
-                    which='SA'
-                )
-            else:
-                evals, evecs = sp.linalg.eigh(H_full)
-
-            # find degeneracy of the ground state
-            eps = 1e-10 # for comparing floating points of GSE
-            degeneracy = 0
-            for e in evals:
-                if e - evals[0] < eps:
-                    degeneracy += 1
+                if type(basis_addition) == type(None):
+                    basis_addition = new_vecs
                 else:
-                    break
-                if degeneracy >= self.degeneracy_truncation:
-                    break
+                    basis_addition = np.append(
+                        basis_addition,
+                        new_vecs,
+                        axis = 1
+                    )
 
-            if type(basis_addition) == type(None):
-                basis_addition = evecs[:, 0:degeneracy]
-            else:
-                basis_addition = np.append(
-                    basis_addition,
-                    evecs[:, 0:degeneracy],
-                    axis = 1
-                )
+                self.log("Adding point...")
+                self.log(f"Training point: {training_point}")
+                self.log(f"Cost: {cost}")
+        else:
+            batch_size = int(
+                np.ceil(len(next_training_points) / self.processes)
+            )
 
-            self.log("Adding point...")
-            self.log(f"Training point: {training_point}")
-            self.log(f"Cost: {cost}")
+            vecs_list = np.array(list(self.pp.map(
+                self.get_H_full_ground_state,
+                next_training_points,
+                chunksize = batch_size
+            )))
+
+            for vecs, training_point, cost in zip(
+                vecs_list, next_training_points, next_costs
+            ):
+                if type(basis_addition) == type(None):
+                    basis_addition = vecs
+                else:
+                    basis_addition = np.append(
+                        basis_addition,
+                        vecs,
+                        axis = 1
+                    )
+
+                self.log("Adding point...")
+                self.log(f"Training point: {training_point}")
+                self.log(f"Cost: {cost}")
 
         return basis_addition
 
@@ -610,7 +667,7 @@ class SurrogateModel:
 
         return training_point
 
-    def set_optimal(self):
+    def set_optimal(self, results_location="results"):
         self.opt_basis = self.basis
         self.opt_overlap = self.basis.conj().T @ self.basis
         self.build_Hr_terms()
@@ -620,6 +677,22 @@ class SurrogateModel:
             f"Using basis found with size {self.opt_basis.shape[1]}"
             + f" reduced from full Hilbert size of {self.size}"
         )
+
+        if self.save_folder:
+            results_folder = f"{self.save_folder}/{results_location}"
+            if not os.path.isdir(results_folder):
+                os.mkdir(results_folder)
+            filename_basis = f"{results_folder}/opt_basis.npz"
+            filename_growth = f"{results_folder}/basis_growth.npz"
+            filename_costs = f"{results_folder}/iteration_costs"
+
+            np.savez_compressed(filename_basis, self.opt_basis)
+            basis_growth = np.array(self.basis_growth)
+            np.savez_compressed(filename_growth, basis_growth)
+
+            for i, iteration in enumerate(self.iteration_costs):
+                iteration_arr = np.array(iteration)
+                np.savez_compressed(f"{filename_costs}{i}.npz", iteration)
 
     def get_H_term(
         self,

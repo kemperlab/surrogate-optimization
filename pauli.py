@@ -536,6 +536,23 @@ def theta_to_param(theta, selected_params, model_type, N):
         param = [NI, NB]
         
         # manual override for test cases
+        hopend = (NB // 2) + (NB % 2) + 1
+        param = [
+            NI, NB,
+            theta[0],
+            [0.0] * NI,
+            [theta[i] for i in range(1, hopend)]
+            + [theta[i] for i in range(1 + (NB % 2), hopend)],
+            [0] * (NB % 2)
+            + [theta[i] for i in range(hopend, hopend + (NB // 2))]
+            + [-theta[i] for i in range(hopend, hopend + (NB // 2))],
+            theta[0] / 2
+        ]
+
+        return tuple(param)
+
+        ###########################
+
         if len(theta) == 6: #(theta == ("U", "vb1", "vb2", "vb3", "eb2", "eb3").all()):
             param = [
                 NI, NB,

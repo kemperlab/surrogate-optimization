@@ -1,193 +1,158 @@
 import numpy as np
+import scipy as sp
 import scipy.sparse as sps
 import matplotlib.pyplot as plt
+import datetime
+from pathos.multiprocessing import ProcessPool
 
 from advisor import SurrogateAdvisor
-from examples import ResidualCostFunction, VarianceCostFunction2
+from examples import ResidualCostFunction, VarianceCostFunction
 from pauli import *
 from surrogate import SurrogateModel
+from testing_interface import Tester
 
-def test_model(model, sparse_proportion=0.2):
-    errors = []
-    for i in range(200):
-        H_full = np.zeros((model.size, model.size), dtype=complex)
+#### MODEL SETUP ####
+if __name__ == "__main__":
+    TEST_START = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    TEST_NAME = "MOCK_TEST1"
+    SAVE_FOLDER = TEST_NAME
+    PROCESSES = 4
 
-        if model.name == "TFIM":
-            J = 2 * np.random.randn()
-            h = 2 * np.random.randn()
-            model_paulis = model_to_paulis(
-                model.N_spin,
-                model.name,
-                {
-                    "J": J,
-                    "h": h,
-                    "periodic": False,
-                },
-            )
-        elif model.name == "TFXY":
-            Jx = 2 * np.random.randn()
-            Jy = Jx
-            h = 2 * np.random.randn()
-            model_paulis = model_to_paulis(
-                model.N_spin,
-                model.name,
-                {
-                    "Jx": Jx,
-                    "Jy": Jy,
-                    "h": h,
-                    "periodic": False,
-                },
-            )
-        elif model.name == "heisenberg":
-            Jx = 2 * np.random.randn()
-            Jy = Jx
-            Jz = 2 * np.random.randn()
-            h = 2 * np.random.randn()
-            model_paulis = model_to_paulis(
-                model.N_spin,
-                model.name,
-                {
-                    "Jx": Jx,
-                    "Jy": Jy,
-                    "Jz": Jz,
-                    "h": h,
-                    "periodic": False,
-                },
-            )
-        elif model.name == "fermi_hubbard":
-            U = (5.0 - 1.0) * np.random.rand() + 1.0
-            model_paulis = model_to_paulis(
-                model.N_spin,
-                model.name,
-                {
-                    "t": 2 * np.random.randn(),
-                    "U": U,
-                    "mu": U / 2
-                },
-            )
-        elif model.name == "AIM":
-            NI = 1
-            NB = model.N_spin - NI
-            U = 4.0
-            vb_test = np.array(
-                [0.01] * ((NB) % 2) + [2 * np.random.randn()] * (NB - (NB) % 2)
-            )
-            eb_r = 2.0 * np.random.randn()
-            eb_test = np.array(
-                [0.0] * ((NB) % 2)
-                + [eb_r] * ((NB - (NB) % 2) // 2)
-                + [-eb_r] * ((NB - (NB) % 2) // 2)
-            )
-            model_paulis = model_to_paulis(
-                model.N_spin,
-                model.name,
-                {
-                    "NI": NI,
-                    "NB": NB,
-                    "U": U,
-                    "ei": [0.0] * NI,
-                    "vb": vb_test,
-                    "eb": eb_test,
-                    "mu": U / 2,
-                    "periodic": False,
-                },
+    SEED = 4
+
+    MODEL_NAME = "AIM"
+    MODEL_N = 6
+    SELECTED_PARAMETERS = ("U", "vb1", "vb2", "vb3", "eb2", "eb3")
+    PARAMETER_SPACE = (
+        (0.01, 5.0),
+        (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0),
+        (-5.0, 5.0), (-5.0, 5.0)
+    )
+    INIT_THETA = (
+        PARAMETER_SPACE[0][0],
+        PARAMETER_SPACE[1][0],PARAMETER_SPACE[2][0],PARAMETER_SPACE[3][0],
+        PARAMETER_SPACE[4][0],PARAMETER_SPACE[5][0]
+    )
+    PARTICLE_SELECTION = (MODEL_N // 2, MODEL_N // 2)
+    SPARSE = True
+
+    if not os.path.isdir(SAVE_FOLDER):
+        os.mkdir(SAVE_FOLDER)
+
+    LOG_FILENAME = f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}.log"
+
+    #### COST FUNCTION SETUP ####
+    TOTAL_SOBOL_POINTS = 1000
+    POINTS_PER_ITERATION = 10
+
+    ### VARIANCE COST FUNCTION SETUP ###
+    VARIANCE_THRESHOLD = 1e-9
+
+    ### RESIDUAL COST FUNCTION SETUP ###
+    RESIDUAL_THRESHOLD = 1e-9
+
+    pp = ProcessPool(nodes=PROCESSES)
+
+    model = SurrogateModel(
+        MODEL_NAME,
+        SELECTED_PARAMETERS,
+        MODEL_N,
+        particle_selection = (MODEL_N // 2, MODEL_N // 2),
+        processes = PROCESSES
+    )
+
+    model.build_terms()
+
+    tester = Tester(
+        model,
+        PARAMETER_SPACE,
+        processes = PROCESSES,
+        num_tests = 50,
+        seed = SEED
+    )
+
+    sobol_gen = sp.stats.qmc.Sobol(len(PARAMETER_SPACE),
+        rng=np.random.default_rng(SEED))
+    # round up to the nearest power of two
+    power = int(np.log2(TOTAL_SOBOL_POINTS) + 0.5)
+    points = np.array(sobol_gen.random_base2(power))
+    for i, point in enumerate(points):
+        for coord, param_range in enumerate(PARAMETER_SPACE):
+            points[i][coord] = (
+                (param_range[1] - param_range[0]) * points[i][coord]
+                + param_range[0]
             )
 
-        paulis_dict = {}
-        for t in model_paulis:
-            paulis_dict[t[0]] = t[1]
-        parameters = paulis_dict
+    model.log("Generating training grid...")
 
-        for pauli in model.H_terms.keys():
-            H_full += parameters[pauli] * model.H_terms[pauli]
+    batch_size = int(np.ceil(len(points) / PROCESSES))
+    training_grid = list(pp.map(
+        model.theta_to_training_point,
+        points,
+        chunksize=batch_size
+    ))
+    training_grid = np.array(training_grid, dtype=dict)
 
-        if model.sparse:
-            evals, evecs = sps.linalg.eigsh(
-                H_full.real,
-                k=int(sparse_proportion*model.size),
-                which='SA'
-            )
-        else:
-            evals, evecs = np.linalg.eigh(H_full)
+    model.log("Training grid generated")
 
-        test_evals, test_evecs = model.solve(parameters)
-        if abs(evals[0]) < 1e-12:
-            errors.append(np.abs(evals[0] - test_evals[0]))
-        else:
-            errors.append(np.abs(evals[0] - test_evals[0]) / np.abs(evals[0]))
+    var_cfi = VarianceCostFunction(
+        model,
+        training_grid,
+        VARIANCE_THRESHOLD
+    )
 
-    return errors
+    res_cfi = ResidualCostFunction(
+        model,
+        RESIDUAL_THRESHOLD,
+        INIT_THETA,
+        PARAMETER_SPACE,
+        TOTAL_SOBOL_POINTS,
+        POINTS_PER_ITERATION,
+        seed=SEED
+    )
 
-MODEL_1 = "AIM"
-N_1 = 4
-PARAM_BOUNDS_1 = ((-5.0, 5.0), (-5.0, 5.0))
-SELECTED_PARAMS_1 = ("vb", "eb")
-INIT_THETA_1 = (PARAM_BOUNDS_1[0][0], PARAM_BOUNDS_1[1][0])
+    model.basis_growth = []
+    model.iteration_costs = [[model.init_optimize(var_cfi, INIT_THETA)]]
+    model.set_optimal()
 
-model_1 = SurrogateModel(
-    MODEL_1,
-    SELECTED_PARAMS_1,
-    N_1,
-    processes = 1
-)
+    var_basis_sizes = [model.basis.shape[1]]
+    var_max_errors = [max(tester.test_model())]
 
-model_1.build_terms()
+    for i in range(model.max_it):
+        model.log(f"Iteration {i + 1}")
+        if model.optimize_step(var_cfi):
+            break
+        model.set_optimal()
+        errors = tester.test_model()
+        max_error = max(errors)
 
-cfi_1_1 = VarianceCostFunction2(
-    model_1,
-    1e-9,
-    INIT_THETA_1,
-    PARAM_BOUNDS_1,
-    1000,
-    1
-)
+        var_basis_sizes.append(model.basis.shape[1])
+        var_max_errors.append(max_error)
 
-cfi_1_2 = ResidualCostFunction(
-    model_1,
-    1e-9,
-    INIT_THETA_1,
-    PARAM_BOUNDS_1,
-    1000,
-    1
-)
+    model.reset()
 
-model_1.iteration_costs = [[model_1.init_optimize(cfi_1_1, INIT_THETA_1)]]
-model_1.set_optimal()
+    model.basis_growth = []
+    model.iteration_costs = [[model.init_optimize(var_cfi, INIT_THETA)]]
+    model.set_optimal()
 
-basis_sizes_1_1 = [model_1.basis.shape[1]]
-max_errors_1_1 = [max(test_model(model_1))]
+    res_basis_sizes = [model.basis.shape[1]]
+    res_max_errors = [max(tester.test_model())]
 
-for i in range(model_1.max_it):
-    model_1.log("Iteration {i + 1}")
-    if model_1.optimize_step(cfi_1_1):
-        break
-    model_1.set_optimal()
-    errors = test_model(model_1)
-    max_error = max(errors)
+    for i in range(model.max_it):
+        model.log(f"Iteration {i + 1}")
+        if model.optimize_step(res_cfi):
+            break
+        model.set_optimal()
+        errors = tester.test_model()
+        max_error = max(errors)
 
-    basis_sizes_1_1.append(model_1.basis.shape[1])
-    max_errors_1_1.append(max_error)
+        res_basis_sizes.append(model.basis.shape[1])
+        res_max_errors.append(max_error)
 
-model_1.reset()
-
-model_1.iteration_costs = [[model_1.init_optimize(cfi_1_2, INIT_THETA_1)]]
-model_1.set_optimal()
-
-basis_sizes_1_2 = [model_1.basis.shape[1]]
-max_errors_1_2 = [max(test_model(model_1))]
-
-for i in range(model_1.max_it):
-    model_1.log("Iteration {i + 1}")
-    if model_1.optimize_step(cfi_1_2):
-        break
-    model_1.set_optimal()
-    errors = test_model(model_1)
-    max_error = max(errors)
-
-    basis_sizes_1_2.append(model_1.basis.shape[1])
-    max_errors_1_2.append(max_error)
-
-plt.semilogy(basis_sizes_1_1, max_errors_1_1, label="Variance")
-plt.semilogy(basis_sizes_1_2, max_errors_1_2, label="Residual")
-plt.legend()
-plt.show()
+    plt.semilogy(var_basis_sizes, var_max_errors, label="Variance")
+    plt.semilogy(res_basis_sizes, res_max_errors, label="Residual")
+    plt.xlabel("Basis Size")
+    plt.ylabel("Max Error")
+    plt.title("Max Error VS Basis Size, AIM N=6")
+    plt.legend()
+    plt.show()
