@@ -450,7 +450,10 @@ class SurrogateModel:
             The matrix in the full Hilbert space
         """
 
-        H_full = np.zeros((self.size, self.size), dtype=float)
+        #H_full = np.zeros((self.size, self.size), dtype=float)
+        H_full = sp.sparse.lil_array(
+           (self.size, self.size), dtype=float
+        )
         for pauli in self.pauli_strings:
             H_full += training_point[pauli] * self.get_H_term(pauli)
 

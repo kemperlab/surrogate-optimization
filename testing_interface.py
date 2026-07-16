@@ -72,6 +72,8 @@ class Tester:
                     chunksize=batch_size
                 ))
 
+                self.model.log("Testing grid created")
+
                 self.ground_states = list(pool.map(
                     partial(
                         get_full_ground_state,
