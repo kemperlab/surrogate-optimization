@@ -1,10 +1,30 @@
 import numpy as np
 import scipy.sparse as sps
 import matplotlib.pyplot as plt
+import concurrent.futures
 
+from functools import partial
 from pauli import *
 from surrogate import SurrogateModel
-from pathos.multiprocessing import ProcessPool
+from multiprocessing.pool import ThreadPool
+#from pathos.threading import ThreadPool
+#from pathos.multiprocessing import ProcessPool
+def get_full_ground_state(
+    training_point,
+    model
+):
+    training_point = model.theta_to_training_point(training_point)
+    H_full = model.build_H_full(training_point)
+
+    evals, evecs = sps.linalg.eigsh(
+        H_full,
+        #k=5,
+        k=min(int(model.size * model.sparse_proportion) + 1, 100),
+        which='SA'
+    )
+
+    return evals[0]
+
 
 class Tester:
     def __init__(
@@ -20,7 +40,10 @@ class Tester:
         self.param_bounds = param_bounds
         self.processes = processes
         self.num_tests = num_tests
-        self.pp = ProcessPool(nodes=self.processes)
+        if self.processes == 1:
+            self.pp = None
+        else:
+            self.pp = None #ThreadPool(self.processes)
         self.rng = np.random.default_rng(seed)
 
         self.thetas = []
@@ -35,20 +58,38 @@ class Tester:
 
             self.thetas.append(theta)
 
-        batch_size = int(np.ceil(len(points) / self.processes))
-        self.training_grid = list(self.pp.map(
-            model.theta_to_training_point,
-            self.thetas,
-            chunksize=batch_size
-        ))
-        self.training_grid = np.array(self.training_grid, dtype=dict)
+        if self.processes == 1:
+            self.training_grid = []
+            for theta in self.thetas:
+                training_point = model.theta_to_training_point(theta)
+                self.training_grid.append(training_point)
 
-        batch_size = int(np.ceil(len(self.training_grid) / self.processes))
-        self.ground_states = list(self.pp.map(
-            self.get_full_ground_state,
-            self.training_grid,
-            chunksize=batch_size
-        ))
+            self.ground_states = []
+
+            for training_point in self.training_grid:
+                self.ground_states.append(get_full_ground_state(training_point, self.model))
+        else:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=8
+            ) as pool:
+                batch_size = int(np.ceil(len(points) / self.processes))
+
+                """
+                self.training_grid = list(pool.map(
+                    model.theta_to_training_point,
+                    self.thetas,
+                    chunksize=8
+                ))
+                """
+
+                self.ground_states = list(pool.map(
+                    partial(
+                        get_full_ground_state,
+                        model=self.model
+                    ),
+                    self.thetas,
+                    chunksize=8
+                ))
         self.model.log("Testing framework initialized")
 
     def test_model(self):
@@ -61,16 +102,6 @@ class Tester:
         ))
 
         return errors
-
-    def get_full_ground_state(
-        self,
-        training_point
-    ):
-        H_full = self.model.build_H_full(training_point)
-
-        evals, evecs = np.linalg.eigh(H_full)
-
-        return evals[0]
 
     def get_error(
         self,
