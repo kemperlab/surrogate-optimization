@@ -69,7 +69,7 @@ class Tester:
                 self.training_grid = list(pool.map(
                     model.theta_to_training_point,
                     self.thetas,
-                    chunksize=8
+                    chunksize=batch_size
                 ))
 
                 self.ground_states = list(pool.map(
@@ -78,7 +78,7 @@ class Tester:
                         model=self.model
                     ),
                     self.training_grid,
-                    chunksize=8
+                    chunksize=batch_size
                 ))
         self.model.log("Testing framework initialized")
 
