@@ -5,8 +5,12 @@
 ################################################################################
 
 import datetime
+import concurrent.futures
+import os
 import matplotlib.pyplot as plt
-from pathos.multiprocessing import ProcessPool
+import numpy as np
+import scipy as sp
+import sys
 
 from examples import (
     ResidualCostFunction,
@@ -17,12 +21,12 @@ from surrogate import SurrogateModel
 from testing_interface import Tester
 
 #### MODEL SETUP ####
-if __name__ == "__main__":
+def main():
     TEST_START = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     TEST_NAME = "HPC_TEST1"
     SAVE_FOLDER = TEST_NAME
     PROCESSES = 20
-    NUM_TESTS = 400
+    NUM_TESTS = 200
 
     SEED = 4
 
@@ -48,7 +52,7 @@ if __name__ == "__main__":
         os.mkdir(SAVE_FOLDER)
 
     #### COST FUNCTION SETUP ####
-    TOTAL_SOBOL_POINTS = 100_000
+    TOTAL_SOBOL_POINTS = 16_000
     POINTS_PER_ITERATION = 100
 
     ### VARIANCE COST FUNCTION SETUP ###
@@ -58,8 +62,6 @@ if __name__ == "__main__":
     RESIDUAL_THRESHOLD = 1e-9
 
     #### RUN ####
-    pp = ProcessPool(nodes=PROCESSES)
-
     model = SurrogateModel(
         MODEL_NAME,
         SELECTED_PARAMETERS,
@@ -98,12 +100,15 @@ if __name__ == "__main__":
                 + param_range[0]
             )
 
-    batch_size = int(np.ceil(len(points) / PROCESSES))
-    training_grid = list(pp.map(
-        model.theta_to_training_point,
-        points,
-        chunksize=batch_size
-    ))
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=PROCESSES
+    ) as pool:
+        batch_size = int(np.ceil(len(points) / PROCESSES))
+        training_grid = list(pool.map(
+            model.theta_to_training_point,
+            points,
+            chunksize=batch_size
+        ))
     training_grid = np.array(training_grid, dtype=dict)
 
     model.log("Training grid generated")
@@ -229,3 +234,6 @@ if __name__ == "__main__":
     plt.title("States Added Per Iteration for Each Cost Function")
     plt.legend()
     plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_STATES_ADDED_{TEST_START}.svg")
+
+if __name__ == "__main__":
+    main()

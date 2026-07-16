@@ -6,14 +6,10 @@ import concurrent.futures
 from functools import partial
 from pauli import *
 from surrogate import SurrogateModel
-from multiprocessing.pool import ThreadPool
-#from pathos.threading import ThreadPool
-#from pathos.multiprocessing import ProcessPool
 def get_full_ground_state(
     training_point,
     model
 ):
-    training_point = model.theta_to_training_point(training_point)
     H_full = model.build_H_full(training_point)
 
     evals, evecs = sps.linalg.eigsh(
@@ -40,10 +36,6 @@ class Tester:
         self.param_bounds = param_bounds
         self.processes = processes
         self.num_tests = num_tests
-        if self.processes == 1:
-            self.pp = None
-        else:
-            self.pp = None #ThreadPool(self.processes)
         self.rng = np.random.default_rng(seed)
 
         self.thetas = []
@@ -69,25 +61,23 @@ class Tester:
             for training_point in self.training_grid:
                 self.ground_states.append(get_full_ground_state(training_point, self.model))
         else:
-            with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=8
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=self.processes
             ) as pool:
                 batch_size = int(np.ceil(len(points) / self.processes))
 
-                """
                 self.training_grid = list(pool.map(
                     model.theta_to_training_point,
                     self.thetas,
                     chunksize=8
                 ))
-                """
 
                 self.ground_states = list(pool.map(
                     partial(
                         get_full_ground_state,
                         model=self.model
                     ),
-                    self.thetas,
+                    self.training_grid,
                     chunksize=8
                 ))
         self.model.log("Testing framework initialized")
@@ -95,11 +85,14 @@ class Tester:
     def test_model(self):
         self.model.log(f"Testing model on {self.num_tests} tests")
         batch_size = int(np.ceil(len(self.training_grid) / self.processes))
-        errors = list(self.pp.map(
-            self.get_error,
-            np.arange(len(self.training_grid)),
-            chunksize=batch_size
-        ))
+        with concurrent.futures.ProcessPoolExecutor(
+            max_workers=self.processes
+        ) as pool:
+            errors = list(pool.map(
+                self.get_error,
+                np.arange(len(self.training_grid)),
+                chunksize=batch_size
+            ))
 
         return errors
 

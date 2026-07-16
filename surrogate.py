@@ -1,4 +1,5 @@
 import abc
+import concurrent.futures
 import copy
 import datetime
 import io
@@ -6,7 +7,6 @@ import numpy as np
 import scipy as sp
 import sys
 
-#from pathos.multiprocessing import ProcessPool
 from costfunction import *
 from functools import partial
 from pauli import *
@@ -84,7 +84,6 @@ class SurrogateModel:
         sparse_proportion:  float = .20,
         degeneracy_truncation: int = 5,
         processes: int = 1,
-        output_stream: io.IOBase = sys.stdout,
         save_folder: str | None = ".",
         keep_on_disk = False
     ):
@@ -101,7 +100,6 @@ class SurrogateModel:
         self.sparse_proportion = sparse_proportion
         self.degeneracy_truncation = degeneracy_truncation
         self.processes = processes
-        #self.output_stream = output_stream
 
         self.opt_overlap = None
         self.opt_basis = None
@@ -153,11 +151,7 @@ class SurrogateModel:
         else:
             self.max_it = max_it
 
-        if self.processes == 1:
-            self.pool = None
-        elif self.processes > 1:
-            self.pool = ProcessPool(nodes=processes)
-        else:
+        if self.processes < 1:
             raise Exception(
                 "Number of processes should be an integer greater than or equal"
                 + " to one"
@@ -250,35 +244,38 @@ class SurrogateModel:
                     self.H_terms[pauli_string] = H_term
 
         else:
-            batch_size = int(np.ceil(len(needed_terms) / self.processes))
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=self.processes
+            ) as pool:
+                batch_size = int(np.ceil(len(needed_terms) / self.processes))
 
-            if self.keep_on_disk:
-                list(self.pool.map(
-                    partial(
-                        gen_and_save,
-                        N=self.N,
-                        particle_selection=self.particle_selection,
-                        ordering=self.basis_ordering,
-                        sparse=self.sparse,
-                        save_folder=self.save_folder
-                    ),
-                    needed_terms,
-                    chunksize=batch_size
-                ))
-            else:
-                H_terms_list = list(self.pool.map(
-                    partial(
-                        gen_from_pauli_string,
-                        N=self.N,
-                        particle_selection=self.particle_selection,
-                        ordering=self.basis_ordering,
-                        sparse=self.sparse
-                    ),
-                    needed_terms,
-                    chunksize=batch_size
-                ))
-                for pauli_string, H_term in zip(needed_terms, H_terms_list):
-                    self.H_terms[pauli_string] = H_term
+                if self.keep_on_disk and batch_size != 0:
+                    list(pool.map(
+                        partial(
+                            gen_and_save,
+                            N=self.N,
+                            particle_selection=self.particle_selection,
+                            ordering=self.basis_ordering,
+                            sparse=self.sparse,
+                            save_folder=self.save_folder
+                        ),
+                        needed_terms,
+                        chunksize=batch_size
+                    ))
+                elif batch_size != 0:
+                    H_terms_list = list(pool.map(
+                        partial(
+                            gen_from_pauli_string,
+                            N=self.N,
+                            particle_selection=self.particle_selection,
+                            ordering=self.basis_ordering,
+                            sparse=self.sparse
+                        ),
+                        needed_terms,
+                        chunksize=batch_size
+                    ))
+                    for pauli_string, H_term in zip(needed_terms, H_terms_list):
+                        self.H_terms[pauli_string] = H_term
 
         self.log("Built terms")
 
@@ -492,12 +489,15 @@ class SurrogateModel:
             for j, training_point in enumerate(training_points):
                 costs[j] = cfi.cost_function(training_point)
         else:
-            batch_size = int(np.ceil(len(training_points) / self.processes))
-            costs = np.array(list(self.pool.map(
-                cfi.cost_function,
-                training_points,
-                chunksize = batch_size
-            )))
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=self.processes
+            ) as pool:
+                batch_size = int(np.ceil(len(training_points) / self.processes))
+                costs = np.array(list(pool.map(
+                    cfi.cost_function,
+                    training_points,
+                    chunksize = batch_size
+                )))
 
         training_point_idxs = cfi.cost_selector(training_points, costs)
         next_training_points = training_points[training_point_idxs]
@@ -583,27 +583,30 @@ class SurrogateModel:
                 np.ceil(len(next_training_points) / self.processes)
             )
 
-            vecs_list = np.array(list(self.pool.map(
-                self.get_H_full_ground_state,
-                next_training_points,
-                chunksize = batch_size
-            )))
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=self.processes
+            ) as pool:
+                vecs_list = np.array(list(pool.map(
+                    self.get_H_full_ground_state,
+                    next_training_points,
+                    chunksize = batch_size
+                )))
 
-            for vecs, training_point, cost in zip(
-                vecs_list, next_training_points, next_costs
-            ):
-                if type(basis_addition) == type(None):
-                    basis_addition = vecs
-                else:
-                    basis_addition = np.append(
-                        basis_addition,
-                        vecs,
-                        axis = 1
-                    )
+                for vecs, training_point, cost in zip(
+                    vecs_list, next_training_points, next_costs
+                ):
+                    if type(basis_addition) == type(None):
+                        basis_addition = vecs
+                    else:
+                        basis_addition = np.append(
+                            basis_addition,
+                            vecs,
+                            axis = 1
+                        )
 
-                self.log("Adding point...")
-                self.log(f"Training point: {training_point}")
-                self.log(f"Cost: {cost}")
+                    self.log("Adding point...")
+                    self.log(f"Training point: {training_point}")
+                    self.log(f"Cost: {cost}")
 
         return basis_addition
 

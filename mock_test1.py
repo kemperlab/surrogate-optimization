@@ -1,15 +1,13 @@
 ################################################################################
-# HPC TEST 1
+# MOCK TEST 1
 # 
-# TEN SITE ANDERSON IMPURITY MODEL
+# SIX SITE ANDERSON IMPURITY MODEL
 ################################################################################
 
 import datetime
-import time
-import cProfile
+import concurrent.futures
 import os
 import matplotlib.pyplot as plt
-#from pathos.multiprocessing import ProcessPool, ThreadPool
 import numpy as np
 import scipy as sp
 import sys
@@ -64,8 +62,6 @@ def main():
     RESIDUAL_THRESHOLD = 1e-9
 
     #### RUN ####
-    pp = ProcessPool(nodes=PROCESSES)
-
     model = SurrogateModel(
         MODEL_NAME,
         SELECTED_PARAMETERS,
@@ -104,12 +100,15 @@ def main():
                 + param_range[0]
             )
 
-    batch_size = int(np.ceil(len(points) / PROCESSES))
-    training_grid = list(pp.map(
-        model.theta_to_training_point,
-        points,
-        chunksize=batch_size
-    ))
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=PROCESSES
+    ) as pool:
+        batch_size = int(np.ceil(len(points) / PROCESSES))
+        training_grid = list(pool.map(
+            model.theta_to_training_point,
+            points,
+            chunksize=batch_size
+        ))
     training_grid = np.array(training_grid, dtype=dict)
 
     model.log("Training grid generated")
@@ -237,57 +236,4 @@ def main():
     plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_STATES_ADDED_{TEST_START}.svg")
 
 if __name__ == "__main__":
-    print(getattr(sys, '_is_gil_disabled', lambda: False)())
-    TEST_START = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    TEST_NAME = "MOCK_TEST1"
-    SAVE_FOLDER = TEST_NAME
-    PROCESSES = 4
-    NUM_TESTS = 32
-
-    SEED = 4
-
-    MODEL_NAME = "AIM"
-    MODEL_N = 8
-    SELECTED_PARAMETERS = ("U", "vb1", "vb2", "vb3", "vb4", "eb2", "eb3", "eb4")
-    PARAMETER_SPACE = (
-        (0.01, 5.0),
-        (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0),
-        (-5.0, 5.0), (-5.0, 5.0)
-    )
-    INIT_THETA = (
-        PARAMETER_SPACE[0][0],
-        PARAMETER_SPACE[1][0],PARAMETER_SPACE[2][0],PARAMETER_SPACE[3][0],
-        PARAMETER_SPACE[4][0],PARAMETER_SPACE[5][0],
-        PARAMETER_SPACE[6][0],PARAMETER_SPACE[7][0]
-    )
-    PARTICLE_SELECTION = (MODEL_N // 2, MODEL_N // 2)
-    SPARSE = True
-
-    if not os.path.isdir(SAVE_FOLDER):
-        os.mkdir(SAVE_FOLDER)
-
-    LOG_FILENAME = f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}.log"
-
-    model = SurrogateModel(
-        MODEL_NAME,
-        SELECTED_PARAMETERS,
-        MODEL_N,
-        particle_selection = PARTICLE_SELECTION,
-        sparse=SPARSE,
-        save_folder = SAVE_FOLDER,
-        keep_on_disk = False,
-        processes = 1 #PROCESSES
-    )
-
-    model.build_terms()
-
-    model.log("Generating test points...")
-
-    #cProfile.run("Tester(model, PARAMETER_SPACE, PROCESSES, NUM_TESTS, SEED + 1)")
-    print("#####################################################")
-    print("#####################################################")
-    print("#####################################################")
-    start = time.time()
-    Tester(model, PARAMETER_SPACE, PROCESSES, NUM_TESTS, SEED + 1)
-    end = time.time()
-    print(f"Time: {end - start}")
+    main()
