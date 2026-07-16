@@ -5,11 +5,14 @@
 ################################################################################
 
 import datetime
+import time
+import cProfile
 import os
 import matplotlib.pyplot as plt
-from pathos.multiprocessing import ProcessPool
+#from pathos.multiprocessing import ProcessPool, ThreadPool
 import numpy as np
 import scipy as sp
+import sys
 
 from examples import (
     ResidualCostFunction,
@@ -20,7 +23,7 @@ from surrogate import SurrogateModel
 from testing_interface import Tester
 
 #### MODEL SETUP ####
-if __name__ == "__main__":
+def main():
     TEST_START = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     TEST_NAME = "MOCK_TEST1"
     SAVE_FOLDER = TEST_NAME
@@ -232,3 +235,59 @@ if __name__ == "__main__":
     plt.title("States Added Per Iteration for Each Cost Function")
     plt.legend()
     plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_STATES_ADDED_{TEST_START}.svg")
+
+if __name__ == "__main__":
+    print(getattr(sys, '_is_gil_disabled', lambda: False)())
+    TEST_START = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    TEST_NAME = "MOCK_TEST1"
+    SAVE_FOLDER = TEST_NAME
+    PROCESSES = 4
+    NUM_TESTS = 32
+
+    SEED = 4
+
+    MODEL_NAME = "AIM"
+    MODEL_N = 8
+    SELECTED_PARAMETERS = ("U", "vb1", "vb2", "vb3", "vb4", "eb2", "eb3", "eb4")
+    PARAMETER_SPACE = (
+        (0.01, 5.0),
+        (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0),
+        (-5.0, 5.0), (-5.0, 5.0)
+    )
+    INIT_THETA = (
+        PARAMETER_SPACE[0][0],
+        PARAMETER_SPACE[1][0],PARAMETER_SPACE[2][0],PARAMETER_SPACE[3][0],
+        PARAMETER_SPACE[4][0],PARAMETER_SPACE[5][0],
+        PARAMETER_SPACE[6][0],PARAMETER_SPACE[7][0]
+    )
+    PARTICLE_SELECTION = (MODEL_N // 2, MODEL_N // 2)
+    SPARSE = True
+
+    if not os.path.isdir(SAVE_FOLDER):
+        os.mkdir(SAVE_FOLDER)
+
+    LOG_FILENAME = f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}.log"
+
+    model = SurrogateModel(
+        MODEL_NAME,
+        SELECTED_PARAMETERS,
+        MODEL_N,
+        particle_selection = PARTICLE_SELECTION,
+        sparse=SPARSE,
+        save_folder = SAVE_FOLDER,
+        keep_on_disk = False,
+        processes = 1 #PROCESSES
+    )
+
+    model.build_terms()
+
+    model.log("Generating test points...")
+
+    #cProfile.run("Tester(model, PARAMETER_SPACE, PROCESSES, NUM_TESTS, SEED + 1)")
+    print("#####################################################")
+    print("#####################################################")
+    print("#####################################################")
+    start = time.time()
+    Tester(model, PARAMETER_SPACE, PROCESSES, NUM_TESTS, SEED + 1)
+    end = time.time()
+    print(f"Time: {end - start}")

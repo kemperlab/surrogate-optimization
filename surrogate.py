@@ -6,10 +6,35 @@ import numpy as np
 import scipy as sp
 import sys
 
-from pathos.multiprocessing import ProcessPool
+#from pathos.multiprocessing import ProcessPool
 from costfunction import *
 from functools import partial
 from pauli import *
+
+def gen_and_save(
+    pauli_string,
+    N,
+    particle_selection,
+    ordering,
+    sparse,
+    save_folder,
+):
+    H_term = gen_from_pauli_string(
+        pauli_string,
+        N,
+        particle_selection,
+        ordering,
+        sparse
+    )
+
+    if pauli_string == "":
+        filename = save_folder + "/I.npz"
+    else:
+        filename = save_folder + f"/{pauli_string}.npz"
+    if sparse:
+        sp.sparse.save_npz(filename, H_term)
+    else:
+        np.savez_compressed(filename, H_term)
 
 class SurrogateModel:
     # Model Parameters
@@ -76,7 +101,7 @@ class SurrogateModel:
         self.sparse_proportion = sparse_proportion
         self.degeneracy_truncation = degeneracy_truncation
         self.processes = processes
-        self.output_stream = output_stream
+        #self.output_stream = output_stream
 
         self.opt_overlap = None
         self.opt_basis = None
@@ -129,9 +154,9 @@ class SurrogateModel:
             self.max_it = max_it
 
         if self.processes == 1:
-            self.pp = None
+            self.pool = None
         elif self.processes > 1:
-            self.pp = ProcessPool(nodes=processes)
+            self.pool = ProcessPool(nodes=processes)
         else:
             raise Exception(
                 "Number of processes should be an integer greater than or equal"
@@ -163,8 +188,7 @@ class SurrogateModel:
         self.basis_growth = None
 
     def build_terms(
-        self,
-        pregenerate_fulls: bool = False,
+        self
     ):
         self.H_terms = {}
 
@@ -226,46 +250,23 @@ class SurrogateModel:
                     self.H_terms[pauli_string] = H_term
 
         else:
-            def gen_and_save(
-                pauli_string,
-                N,
-                particle_selection,
-                ordering,
-                sparse
-            ):
-                H_term = gen_from_pauli_string(
-                    pauli_string,
-                    N,
-                    particle_selection,
-                    ordering,
-                    sparse
-                )
-
-                if pauli_string == "":
-                    filename = self.save_folder + "/I.npz"
-                else:
-                    filename = self.save_folder + f"/{pauli_string}.npz"
-                if self.sparse:
-                    sp.sparse.save_npz(filename, H_term)
-                else:
-                    np.savez_compressed(filename, H_term)
-
             batch_size = int(np.ceil(len(needed_terms) / self.processes))
 
             if self.keep_on_disk:
-                list(self.pp.map(
+                list(self.pool.map(
                     partial(
                         gen_and_save,
                         N=self.N,
                         particle_selection=self.particle_selection,
                         ordering=self.basis_ordering,
-                        sparse=self.sparse
+                        sparse=self.sparse,
+                        save_folder=self.save_folder
                     ),
                     needed_terms,
                     chunksize=batch_size
                 ))
             else:
-                H_terms_list = list(self.pp.map(
+                H_terms_list = list(self.pool.map(
                     partial(
                         gen_from_pauli_string,
                         N=self.N,
@@ -492,7 +493,7 @@ class SurrogateModel:
                 costs[j] = cfi.cost_function(training_point)
         else:
             batch_size = int(np.ceil(len(training_points) / self.processes))
-            costs = np.array(list(self.pp.map(
+            costs = np.array(list(self.pool.map(
                 cfi.cost_function,
                 training_points,
                 chunksize = batch_size
@@ -582,7 +583,7 @@ class SurrogateModel:
                 np.ceil(len(next_training_points) / self.processes)
             )
 
-            vecs_list = np.array(list(self.pp.map(
+            vecs_list = np.array(list(self.pool.map(
                 self.get_H_full_ground_state,
                 next_training_points,
                 chunksize = batch_size
@@ -715,6 +716,6 @@ class SurrogateModel:
         self,
         text: str
     ):
-        self.output_stream.write(
+        sys.stdout.write(
             str(datetime.datetime.now()) + ": " + text + "\n"
         )
