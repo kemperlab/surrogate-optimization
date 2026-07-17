@@ -202,20 +202,20 @@ class SurrogateModel:
                 try:
                     if self.keep_on_disk:
                         if not os.path.exists(filename):
-                            self.log(f"Failed to locate {filename}")
+                            #self.log(f"Failed to locate {filename}")
                             needed_terms.append(pauli_string)
-                        else:
-                            self.log(f"Found {filename} on disk")
+                        #else:
+                            #self.log(f"Found {filename} on disk")
                     elif self.sparse:
                         self.H_terms[pauli_string] = sp.sparse.load_npz(
                             filename)
-                        self.log(f"Retrieved {filename}")
+                        #self.log(f"Retrieved {filename}")
                     else:
                         self.H_terms[pauli_string] = np.load(filename)["arr_0"]
-                        self.log(f"Retrieved {filename}")
+                        #self.log(f"Retrieved {filename}")
                 except:
                     needed_terms.append(pauli_string)
-                    self.log(f"Failed to retrieved {filename}")
+                    #self.log(f"Failed to retrieved {filename}")
         else:
             needed_terms = copy.copy(self.pauli_strings)
 
@@ -292,7 +292,7 @@ class SurrogateModel:
                     sp.sparse.save_npz(filename, self.H_terms[pauli_string])
                 elif not self.keep_on_disk:
                     np.savez_compressed(filename, self.H_terms[pauli_string])
-                self.log(f"Saving term in {filename}")
+            self.log(f"Saved {needed_terms}")
         elif self.keep_on_disk and len(needed_terms) != 0:
             self.log(f"Saved {needed_terms}")
 
@@ -311,12 +311,16 @@ class SurrogateModel:
         # cost for each iteration
         self.basis = np.zeros((self.size, 0), dtype=float)
         self.overlap = np.zeros((0, 0), dtype=float)
+        
+        self.log("Diagonalizing H...")
 
         H_full = self.build_H_full(init_training_point)
+        v0 = np.ones(H_full.shape[0]) / np.sqrt(H_full.shape[0])
         if self.sparse:
             evals, evecs = sps.linalg.eigsh(
                 H_full.real,
-                k=int(self.size * self.sparse_proportion) + 1,
+                k=min(int(self.size * self.sparse_proportion) + 1, 4),
+                v0=v0,
                 which='SA'
             )
         else:
@@ -329,6 +333,8 @@ class SurrogateModel:
         self.overlap = (self.basis.conj().T @ self.basis).real
         self.build_Hr_terms()
         self.basis_growth.append(1)
+
+        self.log("Calculating cost...")
 
         # initial iteration preiteration
         cfi.preiteration()
@@ -531,12 +537,16 @@ class SurrogateModel:
         self,
         training_point,
     ):
+        self.log("Diagonalizing H...")
+
         H_full = self.build_H_full(training_point)
+        v0 = np.ones(H_full.shape[0]) / np.sqrt(H_full.shape[0])
 
         if self.sparse:
             evals, evecs = sps.linalg.eigsh(
                 H_full.real,
-                k=int(self.size * self.sparse_proportion)+1,
+                k=min(int(self.size * self.sparse_proportion)+1, 4),
+                v0=v0,
                 which='SA'
             )
         else:
@@ -561,6 +571,7 @@ class SurrogateModel:
         next_costs: list,
         next_training_points: list
     ):
+        self.log("Calculating cost...")
         basis_addition = None
         if self.processes == 1:
             for cost, training_point in zip(

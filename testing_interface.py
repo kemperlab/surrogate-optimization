@@ -11,11 +11,13 @@ def get_full_ground_state(
     model
 ):
     H_full = model.build_H_full(training_point)
+    v0 = np.ones(H_full.shape[0]) / np.sqrt(H_full.shape[0])
 
     evals, evecs = sps.linalg.eigsh(
         H_full,
         #k=5,
-        k=min(int(model.size * model.sparse_proportion) + 1, 100),
+        k=min(int(model.size * model.sparse_proportion) + 1, 4),
+        v0=v0,
         which='SA'
     )
 

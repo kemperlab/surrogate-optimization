@@ -320,11 +320,13 @@ class ResidualCostFunction(CostFunctionInterface[float]):
         training_point: dict
     ) -> T:
         H_full = self.model.build_H_full(training_point)
+        v0 = np.ones(H_full.shape[0]) / np.sqrt(H_full.shape[0])
 
         if self.model.sparse:
             evals, evecs = sps.linalg.eigsh(
                 H_full.real,
-                k=int(self.model.size * self.model.sparse_proportion)+1,
+                k=min(int(self.model.size * self.model.sparse_proportion)+1, 4),
+                v0=v0,
                 which='SA'
             )
         else:
@@ -403,20 +405,20 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
                 try:
                     if self.model.keep_on_disk:
                         if not os.path.exists(filename):
-                            self.model.log(f"Failed to find {filename}")
+                            #self.model.log(f"Failed to find {filename}")
                             needed_terms.append(h_ij)
-                        else:
-                            self.model.log(f"Found {filename} on disk")
+                        #else:
+                            #self.model.log(f"Found {filename} on disk")
                     elif self.sparse:
                         self.H_terms[h_ij] = sp.sparse.load_npz(
                             filename)
-                        self.model.log(f"Retrieved {filename}")
+                        #self.model.log(f"Retrieved {filename}")
                     else:
                         self.H_terms[h_ij] = np.load(filename)["arr_0"]
-                        self.model.log(f"Retrieved {filename}")
+                        #self.model.log(f"Retrieved {filename}")
                 except:
                     needed_terms.append(h_ij)
-                    self.model.log(f"Failed to retrieve {filename}")
+                    #self.model.log(f"Failed to retrieve {filename}")
         else:
             needed_terms = copy.copy(self.pauli2_strings)
         for h_ij in needed_terms:
@@ -430,9 +432,11 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
                     sp.sparse.save_npz(filename, H2_term)
                 else:
                     np.savez_compressed(filename, H2_term)
-                self.model.log(f"Saving term {filename}")
+                #self.model.log(f"Saving term {filename}")
             if not self.model.keep_on_disk:
                 self.H2_terms[h_ij] = H2_term
+
+        self.model.log("All H2 terms generated")
 
         self.sobol_gen = sp.stats.qmc.Sobol(len(param_space),
             rng=np.random.default_rng(seed))
