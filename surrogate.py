@@ -334,11 +334,12 @@ class SurrogateModel:
         self.build_Hr_terms()
         self.basis_growth.append(1)
 
-        self.log("Calculating cost...")
 
         # initial iteration preiteration
+        self.log("Running preiteration...")
         cfi.preiteration()
 
+        self.log("Calculating costs...")
         init_cost = cfi.cost_function(init_training_point)
         costs = np.array([[init_cost]])
         training_points = np.array([init_training_point])
@@ -483,8 +484,10 @@ class SurrogateModel:
             self.log("Condition number is to large")
             return True
 
+        self.log("Running preiteration...")
         cfi.preiteration()
 
+        self.log("Generating training points for current iteration...")
         training_points = cfi.gen_training_points()
         if len(training_points) == 0:
             # no more training points
@@ -492,6 +495,7 @@ class SurrogateModel:
             return True
 
         self.log(f"Generated {len(training_points)} training points")
+        self.log("Calculating costs...")
 
         if self.processes == 1:
             costs = np.zeros(len(training_points), dtype=float)
@@ -571,7 +575,6 @@ class SurrogateModel:
         next_costs: list,
         next_training_points: list
     ):
-        self.log("Calculating cost...")
         basis_addition = None
         if self.processes == 1:
             for cost, training_point in zip(

@@ -133,20 +133,20 @@ class VarianceCostFunction(CostFunctionInterface[float]):
                 try:
                     if self.model.keep_on_disk:
                         if not os.path.exists(filename):
-                            self.model.log(f"Failed to find {filename}")
+                            #self.model.log(f"Failed to find {filename}")
                             needed_terms.append(h_ij)
-                        else:
-                            self.model.log(f"Found {filename} on disk")
+                        #else:
+                            #self.model.log(f"Found {filename} on disk")
                     elif self.sparse:
                         self.H_terms[h_ij] = sp.sparse.load_npz(
                             filename)
-                        self.model.log(f"Retrieved {filename}")
+                        #self.model.log(f"Retrieved {filename}")
                     else:
                         self.H_terms[h_ij] = np.load(filename)["arr_0"]
-                        self.model.log(f"Retrieved {filename}")
+                        #self.model.log(f"Retrieved {filename}")
                 except:
                     needed_terms.append(h_ij)
-                    self.model.log(f"Failed to retrieve {filename}")
+                    #self.model.log(f"Failed to retrieve {filename}")
         else:
             needed_terms = copy.copy(self.pauli2_strings)
         for h_ij in needed_terms:
@@ -160,10 +160,10 @@ class VarianceCostFunction(CostFunctionInterface[float]):
                     sp.sparse.save_npz(filename, H2_term)
                 else:
                     np.savez_compressed(filename, H2_term)
-                self.model.log(f"Saving term {filename}")
+                #self.model.log(f"Saving term {filename}")
             if not self.model.keep_on_disk:
                 self.H2_terms[h_ij] = H2_term
-
+        self.model.log("H2 terms retrieved")
 
         self.not_chosen = list(range(len(self.training_grid)))
 
