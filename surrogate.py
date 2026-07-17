@@ -11,6 +11,18 @@ from costfunction import *
 from functools import partial
 from pauli import *
 
+def gen_Hr_and_save(
+    pauli_string,
+    model
+):
+    Hr_term = model.build_Hr_term(pauli_string)
+
+    if pauli_string == "":
+        filename = model.save_folder + "/I_r.npz"
+    else:
+        filename = model.save_folder + f"/{pauli_string}_r.npz"
+    np.savez_compressed(filename, Hr_term)
+
 def gen_and_save(
     pauli_string,
     N,
@@ -61,7 +73,6 @@ class SurrogateModel:
     # Internal State
     size: int
     H_terms: dict[str, np.ndarray] | None
-    H_fulls: dict[str, np.ndarray] | None
     overlap: np.ndarray | None
     basis_list: list | None
     basis: np.ndarray | None
@@ -106,7 +117,6 @@ class SurrogateModel:
         self.opt_Hr_terms = None
 
         self.H_terms = None
-        self.H_fulls = None
         self.overlap = None
         self.basis_list = None
         self.basis = None
@@ -431,7 +441,7 @@ class SurrogateModel:
 
         if type(self.opt_Hr_terms) == type(None):
             self.build_Hr_terms()
-            self.opt_Hr_terms = self.Hr_terms()
+            self.opt_Hr_terms = self.Hr_terms
         
         Hr = self.build_Hr(training_point)
 
@@ -457,7 +467,6 @@ class SurrogateModel:
             The matrix in the full Hilbert space
         """
 
-        #H_full = np.zeros((self.size, self.size), dtype=float)
         H_full = sp.sparse.lil_array(
            (self.size, self.size), dtype=float
         )
@@ -472,7 +481,7 @@ class SurrogateModel:
     ) -> np.ndarray:
         Hr = np.zeros((self.basis.shape[1], self.basis.shape[1]), dtype=float)
         for pauli in self.pauli_strings:
-            Hr += training_point[pauli] * self.Hr_terms[pauli]
+            Hr += training_point[pauli] * self.get_Hr_term(pauli)
 
         return Hr
 
@@ -521,6 +530,8 @@ class SurrogateModel:
             # no training points found, no point in continuing
             return True
         else:
+            self.log("Diagonalizing Hs...")
+
             basis_addition = self.find_basis_addition(
                 next_costs,
                 next_training_points
@@ -541,8 +552,6 @@ class SurrogateModel:
         self,
         training_point,
     ):
-        self.log("Diagonalizing H...")
-
         H_full = self.build_H_full(training_point)
         v0 = np.ones(H_full.shape[0]) / np.sqrt(H_full.shape[0])
 
@@ -662,12 +671,71 @@ class SurrogateModel:
         self.overlap = (self.basis.conj().T @ self.basis).real
 
     def build_Hr_terms(self):
+        self.log("Building Hr terms...")
         self.Hr_terms = {}
-        for pauli in self.pauli_strings:
-            H_term = self.get_H_term(pauli)
-            self.Hr_terms[pauli] = (
-                self.basis.conj().T @ H_term @ self.basis
-            )
+
+        if self.keep_on_disk:
+            for pauli_string in self.pauli_strings:
+                if pauli_string == "":
+                    filename = self.save_folder + "/I_r.npz"
+                else:
+                    filename = self.save_folder + f"/{pauli_string}_r.npz"
+
+        if self.processes == 1:
+            for pauli_string in self.pauli_strings:
+                Hr_term = self.build_Hr_term(pauli_string)
+
+                if self.keep_on_disk:
+                    if pauli_string == "":
+                        filename = self.save_folder + "/I_r.npz"
+                    else:
+                        filename = self.save_folder + f"/{pauli_string}_r.npz"
+                    if self.sparse:
+                        sp.sparse.save_npz(filename, Hr_term)
+                    else:
+                        np.savez_compressed(filename, Hr_term)
+                else:
+                    self.Hr_terms[pauli_string] = Hr_term
+
+        else:
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=self.processes
+            ) as pool:
+                batch_size = int(np.ceil(len(self.pauli_strings) / self.processes))
+
+                if self.keep_on_disk:
+                    list(pool.map(
+                        partial(
+                            gen_Hr_and_save,
+                            model=self
+                        ),
+                        self.pauli_strings,
+                        chunksize=batch_size
+                    ))
+                else:
+                    Hr_terms_list = list(pool.map(
+                        self.build_Hr_term,
+                        self.pauli_strings,
+                        chunksize=batch_size
+                    ))
+                    for pauli_string, H_term in zip(self.pauli_strings, Hr_terms_list):
+                        self.H_terms[pauli_string] = H_term
+
+        self.log("Built Hr terms")
+
+    def get_Hr_term(
+        self,
+        pauli
+    ):
+        if self.keep_on_disk:
+            if pauli == "":
+                filename = self.save_folder + "/I_r.npz"
+            else:
+                filename = self.save_folder + f"/{pauli}_r.npz"
+            Hr_term = np.load(filename)["arr_0"]
+            return Hr_term
+        else:
+            return self.Hr_terms[pauli]
 
     def theta_to_training_point(
         self,
@@ -731,6 +799,12 @@ class SurrogateModel:
             return H_term
         else:
             return self.H_terms[pauli_string]
+
+    def build_Hr_term(
+        self,
+        pauli
+    ):
+        return self.basis.conj().T @ (self.get_H_term(pauli) @ self.basis)
 
     def log(
         self,

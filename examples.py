@@ -1,3 +1,4 @@
+import concurrent.futures
 import copy
 import numpy as np
 import scipy as sp
@@ -31,15 +32,9 @@ class EnergyConvergenceCostFunction(
         if(self.model.overlap.shape == (1, 1)):
             self.ec_energies.append([])
             for training_point in self.training_grid:
-                Hr = np.zeros(
-                    (self.model.basis.shape[1], self.model.basis.shape[1]),
-                    dtype=complex
-                )
-                for pauli in self.model.Hr_terms.keys():
-                    Hr += (
-                        training_point[pauli] * self.model.Hr_terms[pauli]
-                    )
-                    evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
+                Hr = self.model.build_Hr(training_point)
+                evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
+
                 self.ec_energies[-1].append(evals[0])
 
     def gen_training_points(self):
@@ -49,16 +44,7 @@ class EnergyConvergenceCostFunction(
         self,
         training_point: dict
     ):
-        Hr = np.zeros(
-            (self.model.basis.shape[1], self.model.basis.shape[1]),
-            dtype=complex
-        )
-
-        for pauli in self.model.Hr_terms.keys():
-            Hr += (
-                training_point[pauli] * self.model.Hr_terms[pauli]
-            )
-
+        Hr = self.model.build_Hr(training_point)
         evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
 
         return evals[0]
@@ -83,15 +69,8 @@ class EnergyConvergenceCostFunction(
     ) -> bool:
         self.ec_energies.append([])
         for training_point in self.training_grid:
-            Hr = np.zeros(
-                (self.model.basis.shape[1], self.model.basis.shape[1]),
-                dtype=complex
-            )
-            for pauli in self.model.Hr_terms.keys():
-                Hr += (
-                    training_point[pauli] * self.model.Hr_terms[pauli]
-                )
-                evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
+            Hr = self.model.build_Hr(training_point)
+            evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
             self.ec_energies[-1].append(evals[0])
 
         for i in range(len(self.ec_energies[-1])):
@@ -181,13 +160,89 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         else:
             return self.H2_terms[pauli2_string]
 
+    def build_H2r_term(
+        self,
+        pauli2
+    ):
+        return (
+            self.model.basis.conj().T @
+            (self.get_H2_term(pauli2) @ self.model.basis)
+        )
+
+    def build_H2r_term_and_save(
+        self,
+        pauli2
+    ):
+        H2r_term = (
+            self.model.basis.conj().T @
+            (self.get_H2_term(pauli2) @ self.model.basis)
+        )
+
+        filename = self.model.save_folder + f"/{pauli2}_r.npz"
+        np.savez_compressed(filename, H2r_term)
+
     def preiteration(self):
         self.H2r_terms = {}
+
+        if self.model.processes == 1:
+            for paulis in self.paulis_strings:
+                H2r_term = self.build_H2r_term(pauli_string)
+
+                if self.model.keep_on_disk:
+                    filename = self.model.save_folder + f"/{pauli2}_r.npz"
+                    np.savez_compressed(filename, H2r_term)
+                else:
+                    self.H2r_terms[pauli_string] = H2r_term
+
+        else:
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=self.model.processes
+            ) as pool:
+                batch_size = int(
+                    np.ceil(len(self.pauli2_strings) / self.model.processes)
+                )
+
+                if self.model.keep_on_disk:
+                    list(pool.map(
+                        self.build_H2r_term_and_save,
+                        self.pauli2_strings,
+                        chunksize=batch_size
+                    ))
+                else:
+                    H2r_terms_list = list(pool.map(
+                        partial(
+                            self.build_H2r_term,
+                        ),
+                        self.pauli2_strings,
+                        chunksize=batch_size
+                    ))
+                    for pauli2, H2r_term in zip(self.pauli2_strings, H2r_terms_list):
+                        self.H2r_terms[pauli2] = H2r_term
+
+    def get_H2r_term(
+        self,
+        pauli2
+    ):
+        if self.model.keep_on_disk:
+            filename = self.model.save_folder + f"/{pauli2}_r.npz"
+            H2r_term = np.load(filename)["arr_0"]
+            return H2r_term
+        else:
+            return self.H2r_terms[pauli2]
+
+    def build_H2r(
+        self,
+        training_point2
+    ):
+        H2r = np.zeros(
+            (self.model.basis.shape[1], self.model.basis.shape[1]),
+            dtype=float
+        )
+
         for pauli2 in self.pauli2_strings:
-            self.H2r_terms[pauli2] = (
-                self.model.basis.conj().T @ self.get_H2_term(pauli2) @
-                self.model.basis
-            )
+            H2r += training_point2[pauli2] * self.get_H2r_term(pauli2)
+
+        return H2r
 
     def gen_training_points(self):
         return self.training_grid[self.not_chosen]
@@ -197,10 +252,6 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         training_point: dict
     ):
         Hr = self.model.build_Hr(training_point)
-        H2r = np.zeros(
-            (self.model.basis.shape[1], self.model.basis.shape[1]),
-            dtype=float
-        )
 
         training_point2 = {}
         for mu_i in training_point.keys():
@@ -209,11 +260,7 @@ class VarianceCostFunction(CostFunctionInterface[float]):
                     training_point[mu_i] * training_point[mu_j]
                 )
 
-        for pauli in self.H2r_terms.keys():
-            H2r += (
-                training_point2[pauli] * self.H2r_terms[pauli]
-            )
-
+        H2r = self.build_H2r(training_point2)
         evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
 
         # find degeneracy of the ground state
@@ -436,7 +483,7 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
             if not self.model.keep_on_disk:
                 self.H2_terms[h_ij] = H2_term
 
-        self.model.log("All H2 terms generated")
+        #self.model.log("All H2 terms generated")
 
         self.sobol_gen = sp.stats.qmc.Sobol(len(param_space),
             rng=np.random.default_rng(seed))
@@ -471,13 +518,89 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         else:
             return self.H2_terms[pauli2_string]
 
+    def build_H2r_term(
+        self,
+        pauli2
+    ):
+        return (
+            self.model.basis.conj().T @
+            (self.get_H2_term(pauli2) @ self.model.basis)
+        )
+
+    def build_H2r_term_and_save(
+        self,
+        pauli2
+    ):
+        H2r_term = (
+            self.model.basis.conj().T @
+            (self.get_H2_term(pauli2) @ self.model.basis)
+        )
+
+        filename = self.model.save_folder + f"/{pauli2}_r.npz"
+        np.savez_compressed(filename, H2r_term)
+
     def preiteration(self):
         self.H2r_terms = {}
+
+        if self.model.processes == 1:
+            for paulis in self.paulis_strings:
+                H2r_term = self.build_H2r_term(pauli_string)
+
+                if self.model.keep_on_disk:
+                    filename = self.model.save_folder + f"/{pauli2}_r.npz"
+                    np.savez_compressed(filename, H2r_term)
+                else:
+                    self.H2r_terms[pauli_string] = H2r_term
+
+        else:
+            with concurrent.futures.ProcessPoolExecutor(
+                max_workers=self.model.processes
+            ) as pool:
+                batch_size = int(
+                    np.ceil(len(self.pauli2_strings) / self.model.processes)
+                )
+
+                if self.model.keep_on_disk:
+                    list(pool.map(
+                        self.build_H2r_term_and_save,
+                        self.pauli2_strings,
+                        chunksize=batch_size
+                    ))
+                else:
+                    H2r_terms_list = list(pool.map(
+                        partial(
+                            self.build_H2r_term,
+                        ),
+                        self.pauli2_strings,
+                        chunksize=batch_size
+                    ))
+                    for pauli2, H2r_term in zip(self.pauli2_strings, H2r_terms_list):
+                        self.H2r_terms[pauli2] = H2r_term
+
+    def get_H2r_term(
+        self,
+        pauli2
+    ):
+        if self.model.keep_on_disk:
+            filename = self.model.save_folder + f"/{pauli2}_r.npz"
+            H2r_term = np.load(filename)["arr_0"]
+            return H2r_term
+        else:
+            return self.H2r_terms[pauli2]
+
+    def build_H2r(
+        self,
+        training_point2
+    ):
+        H2r = np.zeros(
+            (self.model.basis.shape[1], self.model.basis.shape[1]),
+            dtype=float
+        )
+
         for pauli2 in self.pauli2_strings:
-            self.H2r_terms[pauli2] = (
-                self.model.basis.conj().T @ self.get_H2_term(pauli2) @
-                self.model.basis
-            )
+            H2r += training_point2[pauli2] * self.get_H2r_term(pauli2)
+        
+        return H2r
 
     def gen_training_points(self):
         """
@@ -503,11 +626,6 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         training_point: dict
     ):
         Hr = self.model.build_Hr(training_point)
-        H2r = np.zeros(
-            (self.model.basis.shape[1], self.model.basis.shape[1]),
-            dtype=complex
-        )
-
         training_point2 = {}
         for mu_i in training_point.keys():
             for mu_j in training_point.keys():
@@ -515,10 +633,7 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
                     training_point[mu_i] * training_point[mu_j]
                 )
 
-        for pauli in self.H2r_terms.keys():
-            H2r += (
-                training_point2[pauli] * self.H2r_terms[pauli]
-            )
+        H2r = self.build_H2r(training_point2)
 
         evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
 
