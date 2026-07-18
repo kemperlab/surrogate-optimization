@@ -674,13 +674,6 @@ class SurrogateModel:
         self.log("Building Hr terms...")
         self.Hr_terms = {}
 
-        if self.keep_on_disk:
-            for pauli_string in self.pauli_strings:
-                if pauli_string == "":
-                    filename = self.save_folder + "/I_r.npz"
-                else:
-                    filename = self.save_folder + f"/{pauli_string}_r.npz"
-
         if self.processes == 1:
             for pauli_string in self.pauli_strings:
                 Hr_term = self.build_Hr_term(pauli_string)
@@ -690,10 +683,7 @@ class SurrogateModel:
                         filename = self.save_folder + "/I_r.npz"
                     else:
                         filename = self.save_folder + f"/{pauli_string}_r.npz"
-                    if self.sparse:
-                        sp.sparse.save_npz(filename, Hr_term)
-                    else:
-                        np.savez_compressed(filename, Hr_term)
+                    np.savez_compressed(filename, Hr_term)
                 else:
                     self.Hr_terms[pauli_string] = Hr_term
 
