@@ -221,13 +221,13 @@ def gen_from_pauli_string(
     else:
         op = QubitOperator(pauli_string)
         if sparse:
-            mat = get_sparse_operator(op, N).tocsc().astype(float)
+            mat = get_sparse_operator(op, N).real.tocsc()
             if particle_selection is not None:
                 basis = get_ps_basis(particle_selection, N, ordering=ordering)
                 mat = mat[:, basis][basis]
             return mat
         else:
-            mat = get_sparse_operator(op, N).toarray().astype(float)
+            mat = get_sparse_operator(op, N).toarray().real
 
             if particle_selection is not None:
                 basis = get_ps_basis(particle_selection, N, ordering=ordering)

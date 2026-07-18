@@ -43,7 +43,7 @@ class Tester:
         self.thetas = []
 
         for i in range(self.num_tests):
-            points = np.random.random(len(model.selected_params))
+            points = self.rng.random(len(model.selected_params))
 
             theta = [
                 (b[1] - b[0]) * s + b[0]
@@ -66,7 +66,7 @@ class Tester:
             with concurrent.futures.ProcessPoolExecutor(
                 max_workers=self.processes
             ) as pool:
-                batch_size = int(np.ceil(len(points) / self.processes))
+                batch_size = int(np.ceil(len(self.thetas) / self.processes))
 
                 self.training_grid = list(pool.map(
                     model.theta_to_training_point,

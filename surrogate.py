@@ -74,11 +74,9 @@ class SurrogateModel:
     size: int
     H_terms: dict[str, np.ndarray] | None
     overlap: np.ndarray | None
-    basis_list: list | None
     basis: np.ndarray | None
     Hr_terms: dict[str, np.ndarray] | None
     iteration_costs: list
-    pp: ProcessPool | None
     save_folder: str | None
     keep_on_disk: bool
 
@@ -118,7 +116,6 @@ class SurrogateModel:
 
         self.H_terms = None
         self.overlap = None
-        self.basis_list = None
         self.basis = None
         self.Hr_terms = None
         self.iteration_costs = None
@@ -185,7 +182,6 @@ class SurrogateModel:
         self.opt_basis = None
         self.opt_Hr_terms = None
         self.overlap = None
-        self.basis_list = None
         self.basis = None
         self.Hr_terms = None
         self.iteration_costs = None
@@ -338,8 +334,7 @@ class SurrogateModel:
 
         init_vec = evecs[:, 0]
 
-        self.basis_list = [init_vec]
-        self.basis = np.array(self.basis_list).T
+        self.basis = init_vec.reshape(-1, 1)
         self.overlap = (self.basis.conj().T @ self.basis).real
         self.build_Hr_terms()
         self.basis_growth.append(1)
@@ -467,11 +462,10 @@ class SurrogateModel:
             The matrix in the full Hilbert space
         """
 
-        H_full = sp.sparse.lil_array(
-           (self.size, self.size), dtype=float
+        H_full = sum(
+            training_point[pauli] * self.get_H_term(pauli)
+            for pauli in self.pauli_strings
         )
-        for pauli in self.pauli_strings:
-            H_full += training_point[pauli] * self.get_H_term(pauli)
 
         return H_full
 
@@ -612,11 +606,11 @@ class SurrogateModel:
             with concurrent.futures.ProcessPoolExecutor(
                 max_workers=self.processes
             ) as pool:
-                vecs_list = np.array(list(pool.map(
+                vecs_list = list(pool.map(
                     self.get_H_full_ground_state,
                     next_training_points,
                     chunksize = batch_size
-                )))
+                ))
 
                 for vecs, training_point, cost in zip(
                     vecs_list, next_training_points, next_costs
@@ -645,7 +639,7 @@ class SurrogateModel:
             self.overlap, self.basis.conj().T @ basis_addition
         )
 
-        U, sigmas, Vdagger = np.linalg.svd(projection)
+        U, sigmas, Vdagger = np.linalg.svd(projection, full_matrices=False)
         compress_add = 0
         for s in sigmas:
             if s > self.svd_tolerance:
@@ -653,20 +647,16 @@ class SurrogateModel:
             else:
                 break
 
-        for j in range(compress_add):
-            self.basis_list += [U[:, j]]
-
         self.basis_growth.append(compress_add)
 
         self.log(f"Adding {compress_add} vector(s)")
 
-        basis_reduced = np.array(self.basis_list).T
-        if basis_reduced.shape[1] <= self.basis.shape[1]:
+        if compress_add == 0:
             self.log(
                 "Warning: Basis did not increase in size after compression."
             )
         else:
-            self.basis = copy.copy(basis_reduced)
+            self.basis = np.hstack([self.basis, U[:, :compress_add]])
 
         self.overlap = (self.basis.conj().T @ self.basis).real
 
@@ -708,8 +698,8 @@ class SurrogateModel:
                         self.pauli_strings,
                         chunksize=batch_size
                     ))
-                    for pauli_string, H_term in zip(self.pauli_strings, Hr_terms_list):
-                        self.H_terms[pauli_string] = H_term
+                    for pauli_string, Hr_term in zip(self.pauli_strings, Hr_terms_list):
+                        self.Hr_terms[pauli_string] = Hr_term
 
         self.log("Built Hr terms")
 

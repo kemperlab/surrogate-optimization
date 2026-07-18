@@ -25,13 +25,13 @@ def main():
     TEST_START = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     TEST_NAME = "HPC_TEST1"
     SAVE_FOLDER = TEST_NAME
-    PROCESSES = 20
-    NUM_TESTS = 200
+    PROCESSES = 4
+    NUM_TESTS = 20
 
     SEED = 4
 
     MODEL_NAME = "AIM"
-    MODEL_N = 10
+    MODEL_N = 8
     SELECTED_PARAMETERS = (
         "U",
         "vb1", "vb2", "vb3", "vb4", "vb5",

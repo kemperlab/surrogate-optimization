@@ -1,5 +1,3 @@
-import concurrent.futures
-import copy
 import numpy as np
 import scipy as sp
 
@@ -83,9 +81,6 @@ class EnergyConvergenceCostFunction(
         return True
 
 class VarianceCostFunction(CostFunctionInterface[float]):
-    H2_terms: dict
-    training_grid2: list
-
     H2r_terms: dict
 
     def __init__(
@@ -104,114 +99,30 @@ class VarianceCostFunction(CostFunctionInterface[float]):
             for h_j in self.model.pauli_strings:
                 self.pauli2_strings.append(f"{h_i} @ {h_j}")
 
-        self.H2_terms = {}
-        needed_terms = []
-        if self.model.save_folder:
-            for h_ij in self.pauli2_strings:
-                filename = self.model.save_folder + f"/{h_ij}.npz"
-                try:
-                    if self.model.keep_on_disk:
-                        if not os.path.exists(filename):
-                            needed_terms.append(h_ij)
-                    elif self.sparse:
-                        self.H_terms[h_ij] = sp.sparse.load_npz(
-                            filename)
-                    else:
-                        self.H_terms[h_ij] = np.load(filename)["arr_0"]
-                except:
-                    needed_terms.append(h_ij)
-        else:
-            needed_terms = copy.copy(self.pauli2_strings)
-        for h_ij in needed_terms:
-            hs = h_ij.split(" @ ")
-            H2_term = (
-                self.model.get_H_term(hs[0]) @ self.model.get_H_term(hs[1])
-            )
-            if self.model.save_folder:
-                filename = self.model.save_folder + f"/{h_ij}.npz"
-                if self.model.sparse:
-                    sp.sparse.save_npz(filename, H2_term)
-                else:
-                    np.savez_compressed(filename, H2_term)
-                #self.model.log(f"Saving term {filename}")
-            if not self.model.keep_on_disk:
-                self.H2_terms[h_ij] = H2_term
-        self.model.log("H2 terms retrieved")
-
+        self.H2r_terms = {}
         self.not_chosen = list(range(len(self.training_grid)))
 
-    def get_H2_term(
-        self,
-        pauli2_string
-    ):
-        if self.model.keep_on_disk:
-            filename = self.model.save_folder + f"/{pauli2_string}.npz"
-            if self.model.sparse:
-                H2_term = sp.sparse.load_npz(filename)
-            else:
-                H2_term = np.load(filename)["arr_0"]
-            return H2_term
-        else:
-            return self.H2_terms[pauli2_string]
-
-    def build_H2r_term(
-        self,
-        pauli2
-    ):
-        return (
-            self.model.basis.conj().T @
-            (self.get_H2_term(pauli2) @ self.model.basis)
-        )
-
-    def build_H2r_term_and_save(
-        self,
-        pauli2
-    ):
-        H2r_term = (
-            self.model.basis.conj().T @
-            (self.get_H2_term(pauli2) @ self.model.basis)
-        )
-
-        filename = self.model.save_folder + f"/{pauli2}_r.npz"
-        np.savez_compressed(filename, H2r_term)
-
     def preiteration(self):
-        self.H2r_terms = {}
+        pass
 
-        if self.model.processes == 1:
-            for paulis in self.paulis_strings:
-                H2r_term = self.build_H2r_term(pauli_string)
+    def build_H2r_terms(self):
+        # uses B^T H_i H_j B = (H_i B)^T (H_j B), so the full-space products
+        # H_i H_j are never formed
+        self.model.log("Building H2r terms...")
+        paulis = self.model.pauli_strings
+        for i, h_i in enumerate(paulis):
+            Y_i = self.model.get_H_term(h_i) @ self.model.basis
+            for h_j in paulis[i:]:
+                Y_j = self.model.get_H_term(h_j) @ self.model.basis
+                H2r_term = Y_i.conj().T @ Y_j
+                self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
+                self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term.conj().T
 
-                if self.model.keep_on_disk:
-                    filename = self.model.save_folder + f"/{pauli2}_r.npz"
-                    np.savez_compressed(filename, H2r_term)
-                else:
-                    self.H2r_terms[pauli_string] = H2r_term
-
-        else:
-            with concurrent.futures.ProcessPoolExecutor(
-                max_workers=self.model.processes
-            ) as pool:
-                batch_size = int(
-                    np.ceil(len(self.pauli2_strings) / self.model.processes)
-                )
-
-                if self.model.keep_on_disk:
-                    list(pool.map(
-                        self.build_H2r_term_and_save,
-                        self.pauli2_strings,
-                        chunksize=batch_size
-                    ))
-                else:
-                    H2r_terms_list = list(pool.map(
-                        partial(
-                            self.build_H2r_term,
-                        ),
-                        self.pauli2_strings,
-                        chunksize=batch_size
-                    ))
-                    for pauli2, H2r_term in zip(self.pauli2_strings, H2r_terms_list):
-                        self.H2r_terms[pauli2] = H2r_term
+        if self.model.save_folder:
+            for pauli2, H2r_term in self.H2r_terms.items():
+                filename = self.model.save_folder + f"/{pauli2}_r.npz"
+                np.savez_compressed(filename, H2r_term)
+        self.model.log("Built H2r terms")
 
     def get_H2r_term(
         self,
@@ -246,15 +157,6 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         training_point: dict
     ):
         Hr = self.model.build_Hr(training_point)
-
-        training_point2 = {}
-        for mu_i in training_point.keys():
-            for mu_j in training_point.keys():
-                training_point2[mu_i  + " @ " +  mu_j] = (
-                    training_point[mu_i] * training_point[mu_j]
-                )
-
-        H2r = self.build_H2r(training_point2)
         evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
 
         # find degeneracy of the ground state
@@ -269,13 +171,16 @@ class VarianceCostFunction(CostFunctionInterface[float]):
             if degeneracy >= self.degeneracy_truncation:
                 break
 
-        # calculate residue
+        # calculate residue using <psi|H^2|psi> = ||H psi||^2 with
+        # psi = basis @ evec, so no H^2 terms are needed
+        H_full = self.model.build_H_full(training_point)
         res2 = 0
         for k in range(degeneracy):
+            psi = self.model.basis @ evecs[:, k]
+            w = H_full @ psi
             res2 += (
-                evecs[:, k].conj().T
-                @ (H2r - ((evals[k] * evals[k]) * self.model.overlap))
-                @ evecs[:, k]
+                w.conj() @ w
+                - (evals[k] * evals[k]) * (psi.conj() @ psi)
             )
 
         return float(res2.real)
@@ -298,7 +203,11 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         self,
         iteration_costs: list[T]
     ) -> bool:
-        return iteration_costs[-1] < self.res2_threshold
+        if iteration_costs[-1] < self.res2_threshold:
+            self.build_H2r_terms()
+            return True
+
+        return False
 
 class ResidualCostFunction(CostFunctionInterface[float]):
     def __init__(
@@ -378,8 +287,8 @@ class ResidualCostFunction(CostFunctionInterface[float]):
         vec = (
             gs
             - self.model.basis @ np.linalg.solve(
-                self.model.overlap, self.model.basis.conj().T
-            ) @ gs
+                self.model.overlap, self.model.basis.conj().T @ gs
+            )
         )
 
         return np.linalg.norm(vec)
@@ -411,9 +320,6 @@ class ResidualCostFunction(CostFunctionInterface[float]):
             return False
 
 class VarianceCostFunction2(CostFunctionInterface[float]):
-    H2_terms: dict
-    training_grid2: list
-
     H2r_terms: dict
 
     def __init__(
@@ -438,46 +344,7 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
             for h_j in self.model.pauli_strings:
                 self.pauli2_strings.append(f"{h_i} @ {h_j}")
 
-        self.H2_terms = {}
-        needed_terms = []
-        if self.model.save_folder:
-            for h_ij in self.pauli2_strings:
-                filename = self.model.save_folder + f"/{h_ij}.npz"
-                try:
-                    if self.model.keep_on_disk:
-                        if not os.path.exists(filename):
-                            #self.model.log(f"Failed to find {filename}")
-                            needed_terms.append(h_ij)
-                        #else:
-                            #self.model.log(f"Found {filename} on disk")
-                    elif self.sparse:
-                        self.H_terms[h_ij] = sp.sparse.load_npz(
-                            filename)
-                        #self.model.log(f"Retrieved {filename}")
-                    else:
-                        self.H_terms[h_ij] = np.load(filename)["arr_0"]
-                        #self.model.log(f"Retrieved {filename}")
-                except:
-                    needed_terms.append(h_ij)
-                    #self.model.log(f"Failed to retrieve {filename}")
-        else:
-            needed_terms = copy.copy(self.pauli2_strings)
-        for h_ij in needed_terms:
-            hs = h_ij.split(" @ ")
-            H2_term = (
-                self.model.get_H_term(hs[0]) @ self.model.get_H_term(hs[1])
-            )
-            if self.model.save_folder:
-                filename = self.model.save_folder + f"/{h_ij}.npz"
-                if self.model.sparse:
-                    sp.sparse.save_npz(filename, H2_term)
-                else:
-                    np.savez_compressed(filename, H2_term)
-                #self.model.log(f"Saving term {filename}")
-            if not self.model.keep_on_disk:
-                self.H2_terms[h_ij] = H2_term
-
-        #self.model.log("All H2 terms generated")
+        self.H2r_terms = {}
 
         self.sobol_gen = sp.stats.qmc.Sobol(len(param_space),
             rng=np.random.default_rng(seed))
@@ -498,78 +365,27 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         self.basis_size_history = []
         self.wait_at_least = int(self.model.size / 4 + 0.5)
 
-    def get_H2_term(
-        self,
-        pauli2_string
-    ):
-        if self.model.keep_on_disk:
-            filename = self.model.save_folder + f"/{pauli2_string}.npz"
-            if self.model.sparse:
-                H2_term = sp.sparse.load_npz(filename)
-            else:
-                H2_term = np.load(filename)["arr_0"]
-            return H2_term
-        else:
-            return self.H2_terms[pauli2_string]
-
-    def build_H2r_term(
-        self,
-        pauli2
-    ):
-        return (
-            self.model.basis.conj().T @
-            (self.get_H2_term(pauli2) @ self.model.basis)
-        )
-
-    def build_H2r_term_and_save(
-        self,
-        pauli2
-    ):
-        H2r_term = (
-            self.model.basis.conj().T @
-            (self.get_H2_term(pauli2) @ self.model.basis)
-        )
-
-        filename = self.model.save_folder + f"/{pauli2}_r.npz"
-        np.savez_compressed(filename, H2r_term)
-
     def preiteration(self):
-        self.H2r_terms = {}
+        pass
 
-        if self.model.processes == 1:
-            for paulis in self.paulis_strings:
-                H2r_term = self.build_H2r_term(pauli_string)
+    def build_H2r_terms(self):
+        # uses B^T H_i H_j B = (H_i B)^T (H_j B), so the full-space products
+        # H_i H_j are never formed
+        self.model.log("Building H2r terms...")
+        paulis = self.model.pauli_strings
+        for i, h_i in enumerate(paulis):
+            Y_i = self.model.get_H_term(h_i) @ self.model.basis
+            for h_j in paulis[i:]:
+                Y_j = self.model.get_H_term(h_j) @ self.model.basis
+                H2r_term = Y_i.conj().T @ Y_j
+                self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
+                self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term.conj().T
 
-                if self.model.keep_on_disk:
-                    filename = self.model.save_folder + f"/{pauli2}_r.npz"
-                    np.savez_compressed(filename, H2r_term)
-                else:
-                    self.H2r_terms[pauli_string] = H2r_term
-
-        else:
-            with concurrent.futures.ProcessPoolExecutor(
-                max_workers=self.model.processes
-            ) as pool:
-                batch_size = int(
-                    np.ceil(len(self.pauli2_strings) / self.model.processes)
-                )
-
-                if self.model.keep_on_disk:
-                    list(pool.map(
-                        self.build_H2r_term_and_save,
-                        self.pauli2_strings,
-                        chunksize=batch_size
-                    ))
-                else:
-                    H2r_terms_list = list(pool.map(
-                        partial(
-                            self.build_H2r_term,
-                        ),
-                        self.pauli2_strings,
-                        chunksize=batch_size
-                    ))
-                    for pauli2, H2r_term in zip(self.pauli2_strings, H2r_terms_list):
-                        self.H2r_terms[pauli2] = H2r_term
+        if self.model.save_folder:
+            for pauli2, H2r_term in self.H2r_terms.items():
+                filename = self.model.save_folder + f"/{pauli2}_r.npz"
+                np.savez_compressed(filename, H2r_term)
+        self.model.log("Built H2r terms")
 
     def get_H2r_term(
         self,
@@ -620,15 +436,6 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         training_point: dict
     ):
         Hr = self.model.build_Hr(training_point)
-        training_point2 = {}
-        for mu_i in training_point.keys():
-            for mu_j in training_point.keys():
-                training_point2[mu_i  + " @ " +  mu_j] = (
-                    training_point[mu_i] * training_point[mu_j]
-                )
-
-        H2r = self.build_H2r(training_point2)
-
         evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
 
         # find degeneracy of the ground state
@@ -643,13 +450,16 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
             if degeneracy >= self.degeneracy_truncation:
                 break
 
-        # calculate variance
+        # calculate variance using <psi|H^2|psi> = ||H psi||^2 with
+        # psi = basis @ evec, so no H^2 terms are needed
+        H_full = self.model.build_H_full(training_point)
         var = 0
         for k in range(degeneracy):
+            psi = self.model.basis @ evecs[:, k]
+            w = H_full @ psi
             var += (
-                evecs[:, k].conj().T
-                @ (H2r - ((evals[k] * evals[k]) * self.model.overlap))
-                @ evecs[:, k]
+                w.conj() @ w
+                - (evals[k] * evals[k]) * (psi.conj() @ psi)
             )
 
         return float(var.real)
@@ -676,6 +486,7 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         iteration_costs: list[T]
     ) -> bool:
         if len(iteration_costs[-1]) == 0:
+            self.build_H2r_terms()
             return True
         else:
             return False
