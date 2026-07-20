@@ -82,6 +82,7 @@ class EnergyConvergenceCostFunction(
 
 class VarianceCostFunction(CostFunctionInterface[float]):
     H2r_terms: dict
+    terminate_before_basis_update = True
 
     def __init__(
         self,
@@ -95,15 +96,20 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         self.res2_threshold = res2_threshold
         self.degeneracy_truncation = degeneracy_truncation
         self.pauli2_strings = []
+        self.pauli2_pairs = {}
         for h_i in self.model.pauli_strings:
             for h_j in self.model.pauli_strings:
-                self.pauli2_strings.append(f"{h_i} @ {h_j}")
+                pauli2 = f"{h_i} @ {h_j}"
+                self.pauli2_strings.append(pauli2)
+                self.pauli2_pairs[pauli2] = (h_i, h_j)
 
         self.H2r_terms = {}
         self.not_chosen = list(range(len(self.training_grid)))
 
     def preiteration(self):
-        pass
+        # basis is fixed for the duration of this iteration's training-point
+        # sweep, so build H2r terms once here instead of per training_point
+        self.build_H2r_terms()
 
     def build_H2r_terms(self):
         # uses B^T H_i H_j B = (H_i B)^T (H_j B), so the full-space products
@@ -115,13 +121,25 @@ class VarianceCostFunction(CostFunctionInterface[float]):
             for h_j in paulis[i:]:
                 Y_j = self.model.get_H_term(h_j) @ self.model.basis
                 H2r_term = Y_i.conj().T @ Y_j
-                self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
-                self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term.conj().T
+                H2r_term_T = H2r_term.conj().T
 
-        if self.model.save_folder:
-            for pauli2, H2r_term in self.H2r_terms.items():
-                filename = self.model.save_folder + f"/{pauli2}_r.npz"
-                np.savez_compressed(filename, H2r_term)
+                if self.model.outdir:
+                    np.savez_compressed(
+                        self.model.outdir + f"/{h_i} @ {h_j}_r.npz",
+                        H2r_term
+                    )
+                    np.savez_compressed(
+                        self.model.outdir + f"/{h_j} @ {h_i}_r.npz",
+                        H2r_term_T
+                    )
+
+                # when keep_on_disk is set, terms are written above and read
+                # back one at a time by get_H2r_term, so they are not kept
+                # resident in memory here
+                if not self.model.keep_on_disk:
+                    self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
+                    self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term_T
+
         self.model.log("Built H2r terms")
 
     def get_H2r_term(
@@ -129,7 +147,7 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         pauli2
     ):
         if self.model.keep_on_disk:
-            filename = self.model.save_folder + f"/{pauli2}_r.npz"
+            filename = self.model.outdir + f"/{pauli2}_r.npz"
             H2r_term = np.load(filename)["arr_0"]
             return H2r_term
         else:
@@ -171,16 +189,21 @@ class VarianceCostFunction(CostFunctionInterface[float]):
             if degeneracy >= self.degeneracy_truncation:
                 break
 
-        # calculate residue using <psi|H^2|psi> = ||H psi||^2 with
-        # psi = basis @ evec, so no H^2 terms are needed
-        H_full = self.model.build_H_full(training_point)
+        # calculate residue using <psi|H^2|psi> = evec^T H2r evec with
+        # psi = basis @ evec, so H2r (built once per basis in preiteration)
+        # is reused across all training points instead of rebuilding
+        # H_full and doing a full-space matvec for each one
+        training_point2 = {
+            pauli2: training_point[h_i] * training_point[h_j]
+            for pauli2, (h_i, h_j) in self.pauli2_pairs.items()
+        }
+        H2r = self.build_H2r(training_point2)
         res2 = 0
         for k in range(degeneracy):
-            psi = self.model.basis @ evecs[:, k]
-            w = H_full @ psi
+            evec = evecs[:, k]
             res2 += (
-                w.conj() @ w
-                - (evals[k] * evals[k]) * (psi.conj() @ psi)
+                evec.conj() @ H2r @ evec
+                - (evals[k] * evals[k]) * (evec.conj() @ self.model.overlap @ evec)
             )
 
         return float(res2.real)
@@ -196,20 +219,18 @@ class VarianceCostFunction(CostFunctionInterface[float]):
             if t == training_point:
                 self.not_chosen.remove(self.not_chosen[i])
                 return [max_cost_idx]
-        
+
         return None
 
     def check_termination(
         self,
         iteration_costs: list[T]
     ) -> bool:
-        if iteration_costs[-1] < self.res2_threshold:
-            self.build_H2r_terms()
-            return True
-
-        return False
+        return iteration_costs[-1] < self.res2_threshold
 
 class ResidualCostFunction(CostFunctionInterface[float]):
+    full_diag_per_point = True
+
     def __init__(
         self,
         model,
@@ -340,9 +361,12 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         self.degeneracy_truncation = degeneracy_truncation
 
         self.pauli2_strings = []
+        self.pauli2_pairs = {}
         for h_i in self.model.pauli_strings:
             for h_j in self.model.pauli_strings:
-                self.pauli2_strings.append(f"{h_i} @ {h_j}")
+                pauli2 = f"{h_i} @ {h_j}"
+                self.pauli2_strings.append(pauli2)
+                self.pauli2_pairs[pauli2] = (h_i, h_j)
 
         self.H2r_terms = {}
 
@@ -366,7 +390,9 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         self.wait_at_least = int(self.model.size / 4 + 0.5)
 
     def preiteration(self):
-        pass
+        # basis is fixed for the duration of this iteration's training-point
+        # sweep, so build H2r terms once here instead of per training_point
+        self.build_H2r_terms()
 
     def build_H2r_terms(self):
         # uses B^T H_i H_j B = (H_i B)^T (H_j B), so the full-space products
@@ -378,13 +404,25 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
             for h_j in paulis[i:]:
                 Y_j = self.model.get_H_term(h_j) @ self.model.basis
                 H2r_term = Y_i.conj().T @ Y_j
-                self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
-                self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term.conj().T
+                H2r_term_T = H2r_term.conj().T
 
-        if self.model.save_folder:
-            for pauli2, H2r_term in self.H2r_terms.items():
-                filename = self.model.save_folder + f"/{pauli2}_r.npz"
-                np.savez_compressed(filename, H2r_term)
+                if self.model.outdir:
+                    np.savez_compressed(
+                        self.model.outdir + f"/{h_i} @ {h_j}_r.npz",
+                        H2r_term
+                    )
+                    np.savez_compressed(
+                        self.model.outdir + f"/{h_j} @ {h_i}_r.npz",
+                        H2r_term_T
+                    )
+
+                # when keep_on_disk is set, terms are written above and read
+                # back one at a time by get_H2r_term, so they are not kept
+                # in memory here
+                if not self.model.keep_on_disk:
+                    self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
+                    self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term_T
+
         self.model.log("Built H2r terms")
 
     def get_H2r_term(
@@ -392,7 +430,7 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         pauli2
     ):
         if self.model.keep_on_disk:
-            filename = self.model.save_folder + f"/{pauli2}_r.npz"
+            filename = self.model.outdir + f"/{pauli2}_r.npz"
             H2r_term = np.load(filename)["arr_0"]
             return H2r_term
         else:
@@ -450,16 +488,21 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
             if degeneracy >= self.degeneracy_truncation:
                 break
 
-        # calculate variance using <psi|H^2|psi> = ||H psi||^2 with
-        # psi = basis @ evec, so no H^2 terms are needed
-        H_full = self.model.build_H_full(training_point)
+        # calculate variance using <psi|H^2|psi> = evec^T H2r evec with
+        # psi = basis @ evec, so H2r (built once per basis in preiteration)
+        # is reused across all training points instead of rebuilding
+        # H_full and doing a full-space matvec for each one
+        training_point2 = {
+            pauli2: training_point[h_i] * training_point[h_j]
+            for pauli2, (h_i, h_j) in self.pauli2_pairs.items()
+        }
+        H2r = self.build_H2r(training_point2)
         var = 0
         for k in range(degeneracy):
-            psi = self.model.basis @ evecs[:, k]
-            w = H_full @ psi
+            evec = evecs[:, k]
             var += (
-                w.conj() @ w
-                - (evals[k] * evals[k]) * (psi.conj() @ psi)
+                evec.conj() @ H2r @ evec
+                - (evals[k] * evals[k]) * (evec.conj() @ self.model.overlap @ evec)
             )
 
         return float(var.real)

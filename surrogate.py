@@ -11,6 +11,12 @@ from costfunction import *
 from functools import partial
 from pauli import *
 
+class TrainingPoint(dict):
+    # carries the theta (selected_params values) it was built from, so
+    # logging can show the human-readable parameters instead of raw
+    # pauli-string coefficients
+    theta: tuple
+
 def gen_Hr_and_save(
     pauli_string,
     model
@@ -18,9 +24,9 @@ def gen_Hr_and_save(
     Hr_term = model.build_Hr_term(pauli_string)
 
     if pauli_string == "":
-        filename = model.save_folder + "/I_r.npz"
+        filename = model.outdir + "/I_r.npz"
     else:
-        filename = model.save_folder + f"/{pauli_string}_r.npz"
+        filename = model.outdir + f"/{pauli_string}_r.npz"
     np.savez_compressed(filename, Hr_term)
 
 def gen_and_save(
@@ -120,6 +126,12 @@ class SurrogateModel:
         self.Hr_terms = None
         self.iteration_costs = None
         self.basis_growth = None
+        self.n_full_diag = 0
+        self.n_iterations = 0
+        # init_optimize() already runs cfi.preiteration() for the seed
+        # basis; this flag tells the first optimize_step() call to skip
+        # its own redundant preiteration() call for that same basis
+        self._preiteration_fresh = False
 
         if keep_on_disk and not save_folder:
             raise Exception(
@@ -130,7 +142,7 @@ class SurrogateModel:
 
         if save_folder:
             self.save_folder = save_folder + f"/{self.name}_{self.N_spin}"
-            
+
             if self.sparse:
                 self.save_folder += "_sparse"
 
@@ -138,7 +150,14 @@ class SurrogateModel:
                 os.mkdir(self.save_folder)
         else:
             self.save_folder = None
-        
+
+        # basis-dependent terms (Hr/H2r) are kept separate from the
+        # basis-independent H_terms above; this is repointed to a
+        # per-run subfolder by optimize()/set_optimal() so different
+        # optimization runs sharing this model don't clobber each
+        # other's Hr terms on disk
+        self.outdir = self.save_folder
+
         if type(self.particle_selection) == type(None):
             self.size = 2**self.N
         elif type(self.particle_selection) == int:
@@ -186,6 +205,10 @@ class SurrogateModel:
         self.Hr_terms = None
         self.iteration_costs = None
         self.basis_growth = None
+        self.n_full_diag = 0
+        self.n_iterations = 0
+        self._preiteration_fresh = False
+        self.outdir = self.save_folder
 
     def build_terms(
         self
@@ -332,6 +355,8 @@ class SurrogateModel:
         else:
             evals, evecs = sp.linalg.eigh(H_full)
 
+        self.n_full_diag += 1
+
         init_vec = evecs[:, 0]
 
         self.basis = init_vec.reshape(-1, 1)
@@ -343,9 +368,12 @@ class SurrogateModel:
         # initial iteration preiteration
         self.log("Running preiteration...")
         cfi.preiteration()
+        self._preiteration_fresh = True
 
         self.log("Calculating costs...")
         init_cost = cfi.cost_function(init_training_point)
+        if cfi.full_diag_per_point:
+            self.n_full_diag += 1
         costs = np.array([[init_cost]])
         training_points = np.array([init_training_point])
 
@@ -354,7 +382,7 @@ class SurrogateModel:
         cfi.cost_selector(training_points, costs)
 
         self.log("Adding point...")
-        self.log(f"Training point: {init_training_point}")
+        self.log(f"Training point: {self.training_point_params(init_training_point)}")
         self.log(f"Cost: {init_cost}")
 
         return costs
@@ -363,15 +391,17 @@ class SurrogateModel:
         self,
         cfi: CostFunctionInterface,
         init_param_point: dict,
-        results_name = "results"
+        outdir = "results"
     ):
         if self.save_folder:
-            results_folder = f"{self.save_folder}/{results_name}"
-            if not os.path.isdir(results_folder):
-                os.mkdir(results_folder)
-            filename_basis = f"{results_folder}/opt_basis.npz"
-            filename_growth = f"{results_folder}/basis_growth.npz"
-            filename_costs = f"{results_folder}/iteration_costs"
+            self.outdir = f"{self.save_folder}/{outdir}"
+            if not os.path.isdir(self.outdir):
+                os.mkdir(self.outdir)
+            filename_basis = f"{self.outdir}/opt_basis.npz"
+            filename_growth = f"{self.outdir}/basis_growth.npz"
+            filename_costs = f"{self.outdir}/iteration_costs"
+            filename_full_diag = f"{self.outdir}/n_full_diag.npz"
+            filename_iterations = f"{self.outdir}/n_iterations.npz"
 
             if os.path.exists(filename_basis):
                 self.log("Loading previously created basis...")
@@ -382,7 +412,20 @@ class SurrogateModel:
                     self.iteration_costs.append(
                         np.load(f"{filename_costs}{i}.npz")["arr_0"]
                     )
-                self.set_optimal(results_name)
+                if os.path.exists(filename_full_diag):
+                    self.n_full_diag = int(
+                        np.load(filename_full_diag)["arr_0"]
+                    )
+                else:
+                    self.log(
+                        "No saved full-diagonalization count found for"
+                        + " this cached basis (older run); leaving at 0"
+                    )
+                if os.path.exists(filename_iterations):
+                    self.n_iterations = int(
+                        np.load(filename_iterations)["arr_0"]
+                    )
+                self.set_optimal(outdir)
 
                 return self.opt_basis
 
@@ -400,10 +443,11 @@ class SurrogateModel:
         self.log("Beginning optimization")
         for i in range(self.max_it):
             self.log(f"Iteration {i + 1}")
+            self.n_iterations += 1
             if self.optimize_step(cfi):
                 break
 
-        self.set_optimal(results_name)
+        self.set_optimal(outdir)
 
         return self.opt_basis
 
@@ -487,8 +531,13 @@ class SurrogateModel:
             self.log("Condition number is to large")
             return True
 
-        self.log("Running preiteration...")
-        cfi.preiteration()
+        if self._preiteration_fresh:
+            # init_optimize() already ran preiteration() for this exact
+            # basis; skip the redundant rebuild
+            self._preiteration_fresh = False
+        else:
+            self.log("Running preiteration...")
+            cfi.preiteration()
 
         self.log("Generating training points for current iteration...")
         training_points = cfi.gen_training_points()
@@ -515,6 +564,9 @@ class SurrogateModel:
                     chunksize = batch_size
                 )))
 
+        if cfi.full_diag_per_point:
+            self.n_full_diag += len(training_points)
+
         training_point_idxs = cfi.cost_selector(training_points, costs)
         next_training_points = training_points[training_point_idxs]
         next_costs = costs[training_point_idxs]
@@ -523,23 +575,42 @@ class SurrogateModel:
             self.log("No viable training points found")
             # no training points found, no point in continuing
             return True
-        else:
-            self.log("Diagonalizing Hs...")
 
-            basis_addition = self.find_basis_addition(
-                next_costs,
-                next_training_points
-            )
+        # some cost functions' check_termination only look at cost values,
+        # not self.model's basis/Hr state, so it can be checked before
+        # find_basis_addition's full-space diagonalization instead of
+        # after, avoiding one wasted diagonalization on termination
+        if cfi.terminate_before_basis_update and cfi.check_termination(
+            self.iteration_costs + [next_costs]
+        ):
+            self.iteration_costs.append(next_costs)
+            # find_basis_addition/compress_basis are skipped here, so mirror
+            # what compress_basis would have logged for basis_growth: 0
+            # vectors added, since this point is deliberately not adopted
+            self.basis_growth.append(0)
+            self.log("Termination condition met")
+            self.log("Final basis size: " + str(self.basis.shape[1]))
+            return True
 
-            self.compress_basis(basis_addition)
-            self.build_Hr_terms()
+        self.log("Diagonalizing Hs...")
+
+        basis_addition = self.find_basis_addition(
+            next_costs,
+            next_training_points
+        )
+
+        self.compress_basis(basis_addition)
+        self.build_Hr_terms()
 
         self.iteration_costs.append(next_costs)
 
-        if cfi.check_termination(self.iteration_costs):
+        if not cfi.terminate_before_basis_update and cfi.check_termination(
+            self.iteration_costs
+        ):
             self.log("Termination condition met")
+            self.log("Final basis size: " + str(self.basis.shape[1]))
             return True
-        
+        self.log("Current basis size: " + str(self.basis.shape[1]))
         return False
 
     def get_H_full_ground_state(
@@ -578,6 +649,10 @@ class SurrogateModel:
         next_costs: list,
         next_training_points: list
     ):
+        # each element gets one full-space diagonalization below, in
+        # get_H_full_ground_state, whether run in-process or via the pool
+        self.n_full_diag += len(next_training_points)
+
         basis_addition = None
         if self.processes == 1:
             for cost, training_point in zip(
@@ -596,7 +671,7 @@ class SurrogateModel:
                     )
 
                 self.log("Adding point...")
-                self.log(f"Training point: {training_point}")
+                self.log(f"Training point: {self.training_point_params(training_point)}")
                 self.log(f"Cost: {cost}")
         else:
             batch_size = int(
@@ -625,7 +700,7 @@ class SurrogateModel:
                         )
 
                     self.log("Adding point...")
-                    self.log(f"Training point: {training_point}")
+                    self.log(f"Training point: {self.training_point_params(training_point)}")
                     self.log(f"Cost: {cost}")
 
         return basis_addition
@@ -670,9 +745,9 @@ class SurrogateModel:
 
                 if self.keep_on_disk:
                     if pauli_string == "":
-                        filename = self.save_folder + "/I_r.npz"
+                        filename = self.outdir + "/I_r.npz"
                     else:
-                        filename = self.save_folder + f"/{pauli_string}_r.npz"
+                        filename = self.outdir + f"/{pauli_string}_r.npz"
                     np.savez_compressed(filename, Hr_term)
                 else:
                     self.Hr_terms[pauli_string] = Hr_term
@@ -709,9 +784,9 @@ class SurrogateModel:
     ):
         if self.keep_on_disk:
             if pauli == "":
-                filename = self.save_folder + "/I_r.npz"
+                filename = self.outdir + "/I_r.npz"
             else:
-                filename = self.save_folder + f"/{pauli}_r.npz"
+                filename = self.outdir + f"/{pauli}_r.npz"
             Hr_term = np.load(filename)["arr_0"]
             return Hr_term
         else:
@@ -727,16 +802,25 @@ class SurrogateModel:
             self.name,
             self.N_spin
         )
-        training_point = param_to_paulis(
+        training_point = TrainingPoint(param_to_paulis(
             param,
             self.params,
             self.name,
             self.N_spin
-        )
+        ))
+        training_point.theta = theta
 
         return training_point
 
-    def set_optimal(self, results_location="results"):
+    def training_point_params(self, training_point):
+        return dict(zip(self.selected_params, training_point.theta))
+
+    def set_optimal(self, outdir="results"):
+        if self.save_folder:
+            self.outdir = f"{self.save_folder}/{outdir}"
+            if not os.path.isdir(self.outdir):
+                os.mkdir(self.outdir)
+
         self.opt_basis = self.basis
         self.opt_overlap = self.basis.conj().T @ self.basis
         self.build_Hr_terms()
@@ -748,20 +832,22 @@ class SurrogateModel:
         )
 
         if self.save_folder:
-            results_folder = f"{self.save_folder}/{results_location}"
-            if not os.path.isdir(results_folder):
-                os.mkdir(results_folder)
-            filename_basis = f"{results_folder}/opt_basis.npz"
-            filename_growth = f"{results_folder}/basis_growth.npz"
-            filename_costs = f"{results_folder}/iteration_costs"
-
-            np.savez_compressed(filename_basis, self.opt_basis)
+            np.savez_compressed(f"{self.outdir}/opt_basis.npz", self.opt_basis)
             basis_growth = np.array(self.basis_growth)
-            np.savez_compressed(filename_growth, basis_growth)
+            np.savez_compressed(f"{self.outdir}/basis_growth.npz", basis_growth)
 
             for i, iteration in enumerate(self.iteration_costs):
                 iteration_arr = np.array(iteration)
-                np.savez_compressed(f"{filename_costs}{i}.npz", iteration)
+                np.savez_compressed(
+                    f"{self.outdir}/iteration_costs{i}.npz", iteration
+                )
+
+            np.savez_compressed(
+                f"{self.outdir}/n_full_diag.npz", self.n_full_diag
+            )
+            np.savez_compressed(
+                f"{self.outdir}/n_iterations.npz", self.n_iterations
+            )
 
     def get_H_term(
         self,
