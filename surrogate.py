@@ -352,6 +352,7 @@ class SurrogateModel:
         # for constitency, this must be run as in some cases it changes the
         # state of the cost function interface, even if we don't use the output
         cfi.cost_selector(training_points, costs)
+        self.log("Adding 1 point(s)")
 
         self.log("Adding point...")
         self.log(f"Training point: {init_training_point}")
@@ -400,6 +401,7 @@ class SurrogateModel:
         self.log("Beginning optimization")
         for i in range(self.max_it):
             self.log(f"Iteration {i + 1}")
+            self.log(f"Current basis size: {self.basis.shape[1]}")
             if self.optimize_step(cfi):
                 break
 
@@ -464,7 +466,7 @@ class SurrogateModel:
 
         H_full = sum(
             training_point[pauli] * self.get_H_term(pauli)
-            for pauli in self.pauli_strings
+            for pauli in training_point.keys()
         )
 
         return H_full
@@ -516,6 +518,7 @@ class SurrogateModel:
                 )))
 
         training_point_idxs = cfi.cost_selector(training_points, costs)
+        self.log(f"Adding {training_point_idx} point(s)")
         next_training_points = training_points[training_point_idxs]
         next_costs = costs[training_point_idxs]
 
