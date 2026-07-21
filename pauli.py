@@ -5,7 +5,7 @@ import os
 from openfermion import (
     jordan_wigner,
     fermi_hubbard,
-    get_fermion_operator,
+    FermionOperator,
     generate_hamiltonian,
     QubitOperator,
 )
@@ -242,6 +242,7 @@ def model_to_paulis(
         t = model_parameters.get("t", 1.0)
         U = model_parameters.get("U", 0.0)
         mu = model_parameters.get("mu", 0.0)
+        epsilon = model_parameters.get("epsilon", 0.0)
         of_hamiltonian = fermi_hubbard(
             N,
             1,
@@ -250,6 +251,25 @@ def model_to_paulis(
             chemical_potential=mu,
             periodic=False,
         )
+        for i in range(2 * N):
+            for j in range(i + 1, 2 * N):
+                if j == i + 2 and i in [2, 3, 6, 7]:
+                    of_hamiltonian += FermionOperator(
+                        f"{i}^ {j}",
+                        t
+                    )
+                    of_hamiltonian += FermionOperator(
+                        f"{j}^ {i}",
+                        t
+                    )
+                    of_hamiltonian += FermionOperator(
+                        f"{i}^ {j}",
+                        -t * np.exp(1j * epsilon).real
+                    )
+                    of_hamiltonian += FermionOperator(
+                        f"{j}^ {i}",
+                        -t * np.exp(1j * epsilon).real
+                    )
         jw_hamiltonian = jordan_wigner(of_hamiltonian)
         pauli_list = of_operator_to_pauli_and_coeff(N * 2, jw_hamiltonian)
         return pauli_list
@@ -372,7 +392,8 @@ def get_model_paulis(model_type, N):
         model_parameters = {
             "t": 1.0,
             "U": 1.0,
-            "mu": 0.5,
+            "mu": 0.0,
+            "epsilon": 0.0,
             "periodic": False,
         }
     elif model_type == "AIM":
@@ -425,7 +446,8 @@ def get_model_base_parameters(model_type, N):
         model_parameters = {
             "t": 1.0,
             "U": 1.0,
-            "mu": 0.5,
+            "mu": 0.0,
+            "epsilon": 0.0,
             "periodic": False,
         }
     elif model_type == "AIM":
@@ -457,7 +479,7 @@ def get_model_parameters(model_type):
     elif model_type == "heisenberg":
         model_parameters = ("Jx", "Jy", "Jz", "h")
     elif model_type == "fermi_hubbard":
-        model_parameters = ("t", "U", "mu")
+        model_parameters = ("t", "U", "mu", "epsilon")
     elif model_type == "AIM":
         model_parameters = ("NI", "NB", "U", "ei", "vb", "eb", "mu")
 
@@ -527,6 +549,12 @@ def theta_to_param(theta, selected_params, model_type, N):
             params.append(theta[idx])
         else:
             params.append(theta[1] / 2)
+
+        if "epsilon" in selected_params:
+            idx = selected_params.index("epsilon")
+            params.append(theta[idx])
+        else:
+            params.append(0.0)
 
         return tuple(params)
 
