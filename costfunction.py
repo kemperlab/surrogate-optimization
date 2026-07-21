@@ -9,6 +9,17 @@ if TYPE_CHECKING:
     from surrogate2 import SurrogateModel
 
 class CostFunctionInterface(Generic[T], abc.ABC):
+    # set to True on subclasses whose cost_function diagonalizes the full
+    # Hilbert-space Hamiltonian for every candidate point, so SurrogateModel
+    # can count those toward n_full_diag
+    full_diag_per_point: bool = False
+
+    # set to True on subclasses whose check_termination only looks at the
+    # cost values themselves (not self.model's basis/Hr state), so
+    # SurrogateModel can check it before paying for find_basis_addition's
+    # full-space diagonalization instead of after
+    terminate_before_basis_update: bool = False
+
     @abc.abstractmethod
     def preiteration(self):
         """
