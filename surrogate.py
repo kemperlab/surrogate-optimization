@@ -132,6 +132,7 @@ class SurrogateModel:
         # basis; this flag tells the first optimize_step() call to skip
         # its own redundant preiteration() call for that same basis
         self._preiteration_fresh = False
+        self.compress_add = None
 
         if keep_on_disk and not save_folder:
             raise Exception(
@@ -207,6 +208,7 @@ class SurrogateModel:
         self.basis_growth = None
         self.n_full_diag = 0
         self.n_iterations = 0
+        self.compress_add = None
         self._preiteration_fresh = False
         self.outdir = self.save_folder
 
@@ -570,7 +572,7 @@ class SurrogateModel:
             self.n_full_diag += len(training_points)
 
         training_point_idxs = cfi.cost_selector(training_points, costs)
-        self.log(f"Adding {training_point_idx} point(s)")
+        self.log(f"Adding {len(training_point_idxs)} point(s)")
         next_training_points = training_points[training_point_idxs]
         next_costs = costs[training_point_idxs]
 
@@ -737,6 +739,9 @@ class SurrogateModel:
             self.basis = np.hstack([self.basis, U[:, :compress_add]])
 
         self.overlap = (self.basis.conj().T @ self.basis).real
+        # temporary storage for how many vectors were added
+        self.compress_add = compress_add
+
 
     def build_Hr_terms(self):
         self.log("Building Hr terms...")

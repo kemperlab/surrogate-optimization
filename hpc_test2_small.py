@@ -1,0 +1,187 @@
+################################################################################
+# HPC TEST 2
+#
+# Graph with lowering thresholds
+################################################################################
+
+import datetime
+import concurrent.futures
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+import scipy as sp
+import sys
+import time
+
+from examples import (
+    training_grid_generator,
+    ResidualCostFunction,
+    VarianceCostFunction2,
+    VarianceCostFunction
+)
+from surrogate import SurrogateModel
+from testing_interface import Tester
+
+def main():
+    TEST_START = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    TEST_NAME = "HPC_TEST2_SMALL"
+    SAVE_FOLDER = TEST_NAME
+    PROCESSES = 4
+    NUM_TESTS = 200
+
+    SEED = 1
+
+    MODEL_NAME = "AIM"
+    MODEL_N = 8
+    SELECTED_PARAMETERS = (
+        "U",
+        "vb1", "vb2", "vb3", "vb4",
+        "eb2", "eb3", "eb4"
+    )
+    PARAMETER_SPACE = (
+        (0.01, 5.0),
+        (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0),
+        (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0)
+    )
+    INIT_THETA = tuple(
+        [PARAMETER_SPACE[i][0] for i in range(len(PARAMETER_SPACE))]
+    )
+    PARTICLE_SELECTION = (MODEL_N // 2, MODEL_N // 2)
+    SPARSE = True
+
+    if not os.path.isdir(SAVE_FOLDER):
+        os.mkdir(SAVE_FOLDER)
+
+    #### COST FUNCTION SETUP ####
+    TOTAL_SOBOL_POINTS = 8_000
+    POINTS_PER_ITERATION = 50
+
+    ### VARIANCE COST FUNCTION SETUP ###
+    VARIANCE_THRESHOLDS = [
+        1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10
+    ]
+
+    ### RESIDUAL COST FUNCTION SETUP ###
+    RESIDUAL_THRESHOLDS = [
+        1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10
+    ]
+    
+    #### RUN ####
+    model = SurrogateModel(
+        name = MODEL_NAME,
+        selected_params = SELECTED_PARAMETERS,
+        N = MODEL_N,
+        particle_selection = PARTICLE_SELECTION,
+        sparse = SPARSE,
+        processes = PROCESSES,
+        save_folder = SAVE_FOLDER
+    )
+
+    model.build_terms()
+
+    model.log("Generating test points...")
+
+    tester = Tester(
+        model,
+        PARAMETER_SPACE,
+        processes = PROCESSES,
+        num_tests = NUM_TESTS,
+        seed = 0 # Testing seed should ALWAYS be zero -- for consistency
+    )
+
+    model.log("Test points generated")
+    model.log("Generating training grid...")
+    training_grid = training_grid_generator(
+        PARAMETER_SPACE,
+        GRID_SIZE,
+        model,
+        PROCESSES
+    )
+    model.log("Training grid generated")
+
+    var_basis_sizes = []
+    var_iterations = []
+    var_max_errors = []
+    var_efficiencies = []
+    var_times = []
+
+    for VARIANCE_THRESHOLD in VARIANCE_THRESHOLDS
+        # Variance based, capping the number of points for variance
+        # calculation and basis addition to POINTS_PER_ITERATION
+        order = int(-np.log10(VARIANCE_THRESHOLD))
+        model.log(f"OPTIMIZING BATCHED VARIANCE WITH ORDER {order}")
+
+        var_cf = VarianceCostFunction2(
+            model,
+            VARIANCE_THRESHOLD,
+            INIT_THETA,
+            PARAMETER_SPACE,
+            TOTAL_SOBOL_POINTS,
+            POINTS_PER_ITERATION,
+            seed = SEED
+        )
+
+        time_start = time.time()
+        model.optimize(
+            var_cf,
+            INIT_THETA,
+            f"Batched_VarianceResults_T{order}_S{SEED}"
+        )
+        var_cf_time = time.time() - time_start
+        model.log(f"Variance Optimization Time: {var_cf_time} seconds")
+
+        var_basis_sizes.append(model.opt_basis.shape[1])
+        var_iterations.append(model.n_iterations)
+        var_max_errors.append(max(tester.test_model()))
+        var_n_full_diag = model.n_full_diag
+        var_efficiencies.append(
+            var_basis_size / var_n_full_diag
+            if var_n_full_diag else float("nan")
+        )
+        var_times.append(var_cf_time)
+
+        model.reset()
+
+    plt.loglog(VARIANCE_THRESHOLDS, var_max_errors, label="Variance")
+    plt.xlabel("Threshold")
+    plt.ylabel("Max Error")
+    plt.title("Batched Variance, Max Error vs Threshold")
+    plt.legend()
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.clf()
+
+    plt.semilogx(VARIANCE_THRESHOLDS, var_basis_sizes, label="Variance")
+    plt.xlabel("Threshold")
+    plt.ylabel("Basis Size")
+    plt.title("Batched Variance, Basis Size vs Threshold")
+    plt.legend()
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.clf()
+
+    plt.semilogx(VARIANCE_THRESHOLDS, var_iterations, label="Variance")
+    plt.xlabel("Threshold")
+    plt.ylabel("Iterations")
+    plt.title("Batched Variance, Iterations vs Threshold")
+    plt.legend()
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.clf()
+
+    plt.semilogx(VARIANCE_THRESHOLDS, var_efficiencies, label="Variance")
+    plt.xlabel("Threshold")
+    plt.ylabel("Efficiency")
+    plt.title("Batched Variance, Efficiency vs Threshold")
+    plt.legend()
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.clf()
+
+    plt.semilogx(VARIANCE_THRESHOLDS, var_times, label="Variance")
+    plt.xlabel("Threshold")
+    plt.ylabel("Time")
+    plt.title("Batched Variance, Time vs Threshold")
+    plt.legend()
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.clf()
+
+
+if __name__ == "__main__":
+    main()

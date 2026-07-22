@@ -15,7 +15,8 @@ import sys
 from examples import (
     ResidualCostFunction,
     VarianceCostFunction2,
-    VarianceCostFunction
+    VarianceCostFunction,
+    NaiveMethod
 )
 from surrogate import SurrogateModel
 from testing_interface import Tester
@@ -113,6 +114,13 @@ def main():
 
     model.log("Training grid generated")
 
+    nve_cf = NaiveMethod(
+        model,
+        PARAMETER_SPACE,
+        TOTAL_SOBOL_POINTS,
+        POINTS_PER_ITERATION
+    )
+
     var_training_cf = VarianceCostFunction(
         model,
         training_grid,
@@ -148,6 +156,19 @@ def main():
         1,
         seed = SEED
     )
+
+    model.optimize(nve_cf, INIT_THETA, "NaiveResults")
+
+    nve_basis_size = model.opt_basis.shape[1]
+    nve_iterations = len(model.iteration_costs)
+    nve_basis_growth = model.basis_growth
+    nve_errors = tester.test_model()
+
+    model.log(f"Naive Basis Size {nve_basis_size}")
+    model.log(f"Naive Iterations {nve_iterations}")
+    model.log(f"Naive Max Error {max(nve_errors)}")
+
+    model.reset()
 
     model.optimize(var_cf, INIT_THETA, "VarianceResults")
 

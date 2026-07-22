@@ -5,6 +5,36 @@ from costfunction import *
 from pauli import *
 from surrogate import SurrogateModel
 
+def training_grid_generator(
+    parameter_space,
+    grid_size,
+    model,
+    processes
+):
+    sobol_gen = sp.stats.qmc.Sobol(len(parameter_space),
+        rng=np.random.default_rng(SEED))
+    # round up to the nearest power of two
+    power = int(np.ceil(np.log2(grid_size)))
+    points = np.array(sobol_gen.random_base2(power))
+    for i, point in enumerate(points):
+        for coord, param_range in enumerate(parameter_space):
+            points[i][coord] = (
+                (param_range[1] - param_range[0]) * points[i][coord]
+                + param_range[0]
+            )
+
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=processes
+    ) as pool:
+        chuck_size = int(np.ceil(len(points) / processes))
+        training_grid = list(pool.map(
+            model.theta_to_training_point,
+            points,
+            chunksize=chuck_size
+        ))
+    return training_grid = np.array(training_grid, dtype=dict)
+
+
 class EnergyConvergenceCostFunction(
     CostFunctionInterface[float]
 ):
@@ -261,7 +291,6 @@ class ResidualCostFunction(CostFunctionInterface[float]):
         self.num_to_exclude = num_to_exclude
         self.chosen = np.array([init_param_point])
         self.search_points = None
-        self.basis_size_history = []
         self.wait_at_least = int(self.model.size / 4 + 0.5)
  
     def preiteration(self):
@@ -386,7 +415,6 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         self.num_to_exclude = num_to_exclude
         self.chosen = np.array([init_param_point])
         self.search_points = None
-        self.basis_size_history = []
         self.wait_at_least = int(self.model.size / 4 + 0.5)
 
     def preiteration(self):
@@ -533,3 +561,85 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
             return True
         else:
             return False
+
+class NaiveMethod(CostFunctionInterface[None]):
+    # set to True on subclasses whose cost_function diagonalizes the full
+    # Hilbert-space Hamiltonian for every candidate point, so SurrogateModel
+    # can count those toward n_full_diag
+    full_diag_per_point: bool = False
+
+    # set to True on subclasses whose check_termination only looks at the
+    # cost values themselves (not self.model's basis/Hr state), so
+    # SurrogateModel can check it before paying for find_basis_addition's
+    # full-space diagonalization instead of after
+    terminate_before_basis_update: bool = True
+
+    def __init__(
+        self,
+        model,
+        param_space,
+        num_points,
+        batch_size,
+        degeneracy_truncation = 5,
+        seed = None
+    ):
+        self.model = model
+        self.batch_size = batch_size
+        self.degeneracy_truncation = degeneracy_truncation
+        self.search_points = None
+
+        self.sobol_gen = sp.stats.qmc.Sobol(len(param_space),
+            rng=np.random.default_rng(seed))
+
+        # round up to the nearest power of two
+        power = int(np.ceil(np.log2(num_points)))
+        self.points = np.array(self.sobol_gen.random_base2(power))
+        for i, point in enumerate(self.points):
+            for coord, param_range in enumerate(param_space):
+                self.points[i][coord] = (
+                    (param_range[1] - param_range[0]) * self.points[i][coord]
+                    + param_range[0]
+                )
+
+    def preiteration(self):
+        pass
+    
+    def gen_training_points(self) -> np.ndarray:
+        self.search_points = np.array(
+            self.points[:self.batch_size]
+        )
+        training_points = []
+
+        for point in self.search_points:
+            training_points.append(self.model.theta_to_training_point(point))
+
+        self.points = self.points[self.batch_size:]
+
+        return np.array(training_points)
+
+
+    def cost_function(
+        self,
+        training_point: dict
+    ) -> None:
+        return None
+
+    def cost_selector(
+        self,
+        training_points: np.ndarray,
+        costs: np.ndarray
+    ) -> int:
+        if type(self.search_points) == type(None):
+            # only for first iteration
+            return 0
+
+        return np.arange(len(training_points))
+
+    def check_termination(
+        self,
+        iteration_costs: list[T]
+    ) -> bool:
+        if self.model.compress_add == None:
+            return False
+
+        return (self.model.compress_add == 0)
