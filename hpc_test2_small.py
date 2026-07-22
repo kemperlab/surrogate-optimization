@@ -53,7 +53,7 @@ def main():
         os.mkdir(SAVE_FOLDER)
 
     #### COST FUNCTION SETUP ####
-    TOTAL_SOBOL_POINTS = 8_000
+    GRID_SIZE = 8_000
     POINTS_PER_ITERATION = 50
 
     ### VARIANCE COST FUNCTION SETUP ###
@@ -90,14 +90,6 @@ def main():
     )
 
     model.log("Test points generated")
-    model.log("Generating training grid...")
-    training_grid = training_grid_generator(
-        PARAMETER_SPACE,
-        GRID_SIZE,
-        model,
-        PROCESSES
-    )
-    model.log("Training grid generated")
 
     var_basis_sizes = []
     var_iterations = []
@@ -105,7 +97,7 @@ def main():
     var_efficiencies = []
     var_times = []
 
-    for VARIANCE_THRESHOLD in VARIANCE_THRESHOLDS
+    for VARIANCE_THRESHOLD in VARIANCE_THRESHOLDS:
         # Variance based, capping the number of points for variance
         # calculation and basis addition to POINTS_PER_ITERATION
         order = int(-np.log10(VARIANCE_THRESHOLD))
@@ -116,7 +108,7 @@ def main():
             VARIANCE_THRESHOLD,
             INIT_THETA,
             PARAMETER_SPACE,
-            TOTAL_SOBOL_POINTS,
+            GRID_SIZE,
             POINTS_PER_ITERATION,
             seed = SEED
         )

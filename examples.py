@@ -32,7 +32,7 @@ def training_grid_generator(
             points,
             chunksize=chuck_size
         ))
-    return training_grid = np.array(training_grid, dtype=dict)
+    return np.array(training_grid, dtype=dict)
 
 
 class EnergyConvergenceCostFunction(
