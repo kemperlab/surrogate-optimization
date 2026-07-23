@@ -127,7 +127,7 @@ def main():
         var_max_errors.append(max(tester.test_model()))
         var_n_full_diag = model.n_full_diag
         var_efficiencies.append(
-            var_basis_size / var_n_full_diag
+            var_basis_sizes[-1] / var_n_full_diag
             if var_n_full_diag else float("nan")
         )
         var_times.append(var_cf_time)
