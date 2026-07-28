@@ -1,5 +1,6 @@
 import numpy as np
 import scipy as sp
+import concurrent.futures
 
 from costfunction import *
 from pauli import *
@@ -150,34 +151,77 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         # sweep, so build H2r terms once here instead of per training_point
         self.build_H2r_terms()
 
+    def build_H2r_term(
+        self,
+        pauli_pair
+    ):
+        h_i = pauli_pair[0]
+        h_j = pauli_pair[1]
+        Y_i = self.model.get_H_term(h_i) @ self.model.basis
+        Y_j = self.model.get_H_term(h_j) @ self.model.basis
+        H2r_term = Y_i.conj().T @ Y_j
+        H2r_term_T = H2r_term.conj().T
+
+        if self.model.outdir:
+            np.savez_compressed(
+                self.model.outdir + f"/{h_i} @ {h_j}_r.npz",
+                H2r_term
+            )
+            np.savez_compressed(
+                self.model.outdir + f"/{h_j} @ {h_i}_r.npz",
+                H2r_term_T
+            )
+
+        # when keep_on_disk is set, terms are written above and read
+        # back one at a time by get_H2r_term, so they are not kept
+        # resident in memory here
+        if not self.model.keep_on_disk:
+            self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
+            self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term_T
+
     def build_H2r_terms(self):
         # uses B^T H_i H_j B = (H_i B)^T (H_j B), so the full-space products
         # H_i H_j are never formed
         self.model.log("Building H2r terms...")
         paulis = self.model.pauli_strings
-        for i, h_i in enumerate(paulis):
-            Y_i = self.model.get_H_term(h_i) @ self.model.basis
-            for h_j in paulis[i:]:
-                Y_j = self.model.get_H_term(h_j) @ self.model.basis
-                H2r_term = Y_i.conj().T @ Y_j
-                H2r_term_T = H2r_term.conj().T
+        if self.model.processes == 1:
+            for i, h_i in enumerate(paulis):
+                Y_i = self.model.get_H_term(h_i) @ self.model.basis
+                for h_j in paulis[i:]:
+                    Y_j = self.model.get_H_term(h_j) @ self.model.basis
+                    H2r_term = Y_i.conj().T @ Y_j
+                    H2r_term_T = H2r_term.conj().T
 
-                if self.model.outdir:
-                    np.savez_compressed(
-                        self.model.outdir + f"/{h_i} @ {h_j}_r.npz",
-                        H2r_term
-                    )
-                    np.savez_compressed(
-                        self.model.outdir + f"/{h_j} @ {h_i}_r.npz",
-                        H2r_term_T
-                    )
+                    if self.model.outdir:
+                        np.savez_compressed(
+                            self.model.outdir + f"/{h_i} @ {h_j}_r.npz",
+                            H2r_term
+                        )
+                        np.savez_compressed(
+                            self.model.outdir + f"/{h_j} @ {h_i}_r.npz",
+                            H2r_term_T
+                        )
 
-                # when keep_on_disk is set, terms are written above and read
-                # back one at a time by get_H2r_term, so they are not kept
-                # resident in memory here
-                if not self.model.keep_on_disk:
-                    self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
-                    self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term_T
+                    # when keep_on_disk is set, terms are written above and read
+                    # back one at a time by get_H2r_term, so they are not kept
+                    # resident in memory here
+                    if not self.model.keep_on_disk:
+                        self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
+                        self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term_T
+
+        else:
+            pauli_pairs = []
+            for i, h_i in enumerate(paulis):
+                for h_j in paulis[i:]:
+                    pauli_pairs.append((h_i, h_j))
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.model.processes
+            ) as pool:
+                list(pool.map(
+                    self.build_H2r_term,
+                    pauli_pairs
+                ))
 
         self.model.log("Built H2r terms")
 
@@ -422,34 +466,77 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         # sweep, so build H2r terms once here instead of per training_point
         self.build_H2r_terms()
 
+    def build_H2r_term(
+        self,
+        pauli_pair
+    ):
+        h_i = pauli_pair[0]
+        h_j = pauli_pair[1]
+        Y_i = self.model.get_H_term(h_i) @ self.model.basis
+        Y_j = self.model.get_H_term(h_j) @ self.model.basis
+        H2r_term = Y_i.conj().T @ Y_j
+        H2r_term_T = H2r_term.conj().T
+
+        if self.model.outdir:
+            np.savez_compressed(
+                self.model.outdir + f"/{h_i} @ {h_j}_r.npz",
+                H2r_term
+            )
+            np.savez_compressed(
+                self.model.outdir + f"/{h_j} @ {h_i}_r.npz",
+                H2r_term_T
+            )
+
+        # when keep_on_disk is set, terms are written above and read
+        # back one at a time by get_H2r_term, so they are not kept
+        # resident in memory here
+        if not self.model.keep_on_disk:
+            self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
+            self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term_T
+
     def build_H2r_terms(self):
         # uses B^T H_i H_j B = (H_i B)^T (H_j B), so the full-space products
         # H_i H_j are never formed
         self.model.log("Building H2r terms...")
         paulis = self.model.pauli_strings
-        for i, h_i in enumerate(paulis):
-            Y_i = self.model.get_H_term(h_i) @ self.model.basis
-            for h_j in paulis[i:]:
-                Y_j = self.model.get_H_term(h_j) @ self.model.basis
-                H2r_term = Y_i.conj().T @ Y_j
-                H2r_term_T = H2r_term.conj().T
+        if self.model.processes == 1:
+            for i, h_i in enumerate(paulis):
+                Y_i = self.model.get_H_term(h_i) @ self.model.basis
+                for h_j in paulis[i:]:
+                    Y_j = self.model.get_H_term(h_j) @ self.model.basis
+                    H2r_term = Y_i.conj().T @ Y_j
+                    H2r_term_T = H2r_term.conj().T
 
-                if self.model.outdir:
-                    np.savez_compressed(
-                        self.model.outdir + f"/{h_i} @ {h_j}_r.npz",
-                        H2r_term
-                    )
-                    np.savez_compressed(
-                        self.model.outdir + f"/{h_j} @ {h_i}_r.npz",
-                        H2r_term_T
-                    )
+                    if self.model.outdir:
+                        np.savez_compressed(
+                            self.model.outdir + f"/{h_i} @ {h_j}_r.npz",
+                            H2r_term
+                        )
+                        np.savez_compressed(
+                            self.model.outdir + f"/{h_j} @ {h_i}_r.npz",
+                            H2r_term_T
+                        )
 
-                # when keep_on_disk is set, terms are written above and read
-                # back one at a time by get_H2r_term, so they are not kept
-                # in memory here
-                if not self.model.keep_on_disk:
-                    self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
-                    self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term_T
+                    # when keep_on_disk is set, terms are written above and read
+                    # back one at a time by get_H2r_term, so they are not kept
+                    # resident in memory here
+                    if not self.model.keep_on_disk:
+                        self.H2r_terms[f"{h_i} @ {h_j}"] = H2r_term
+                        self.H2r_terms[f"{h_j} @ {h_i}"] = H2r_term_T
+
+        else:
+            pauli_pairs = []
+            for i, h_i in enumerate(paulis):
+                for h_j in paulis[i:]:
+                    pauli_pairs.append((h_i, h_j))
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.model.processes
+            ) as pool:
+                list(pool.map(
+                    self.build_H2r_term,
+                    pauli_pairs
+                ))
 
         self.model.log("Built H2r terms")
 
