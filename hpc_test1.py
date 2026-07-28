@@ -101,7 +101,7 @@ def main():
                 + param_range[0]
             )
 
-    with concurrent.futures.ProcessPoolExecutor(
+    with concurrent.futures.ThreadPoolExecutor(
         max_workers=PROCESSES
     ) as pool:
         batch_size = int(np.ceil(len(points) / PROCESSES))

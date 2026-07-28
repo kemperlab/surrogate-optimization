@@ -98,8 +98,6 @@ def main():
     var_times = []
 
     for VARIANCE_THRESHOLD in VARIANCE_THRESHOLDS:
-        # Variance based, capping the number of points for variance
-        # calculation and basis addition to POINTS_PER_ITERATION
         order = int(-np.log10(VARIANCE_THRESHOLD))
         model.log(f"OPTIMIZING BATCHED VARIANCE WITH ORDER {order}")
 
@@ -134,46 +132,91 @@ def main():
 
         model.reset()
 
+    res_basis_sizes = []
+    res_iterations = []
+    res_max_errors = []
+    res_efficiencies = []
+    res_times = []
+
+    for RESIDUAL_THRESHOLD in RESIDUAL_THRESHOLDS:
+        order = int(-np.log10(RESIDUAL_THRESHOLD))
+        model.log(f"OPTIMIZING BATCHED RESIDUAL WITH ORDER {order}")
+
+        res_cf = ResidualCostFunction(
+            model,
+            RESIDUAL_THRESHOLD,
+            INIT_THETA,
+            PARAMETER_SPACE,
+            GRID_SIZE,
+            POINTS_PER_ITERATION,
+            seed = SEED
+        )
+
+        time_start = time.time()
+        model.optimize(
+            res_cf,
+            INIT_THETA,
+            f"Batched_ResidualResults_T{order}_S{SEED}"
+        )
+        res_cf_time = time.time() - time_start
+        model.log(f"Residual Optimization Time: {res_cf_time} seconds")
+
+        res_basis_sizes.append(model.opt_basis.shape[1])
+        res_iterations.append(model.n_iterations)
+        res_max_errors.append(max(tester.test_model()))
+        res_n_full_diag = model.n_full_diag
+        res_efficiencies.append(
+            res_basis_sizes[-1] / res_n_full_diag
+            if res_n_full_diag else float("nan")
+        )
+        res_times.append(res_cf_time)
+
+        model.reset()
+
     plt.loglog(VARIANCE_THRESHOLDS, var_max_errors, label="Variance")
+    plt.loglog(RESIDUAL_THRESHOLDS, res_max_errors, label="Residual")
     plt.xlabel("Threshold")
     plt.ylabel("Max Error")
-    plt.title("Batched Variance, Max Error vs Threshold")
+    plt.title("Batched, Max Error vs Threshold")
     plt.legend()
-    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}_ERROR.svg")
     plt.clf()
 
     plt.semilogx(VARIANCE_THRESHOLDS, var_basis_sizes, label="Variance")
+    plt.semilogx(RESIDUAL_THRESHOLDS, res_basis_sizes, label="Residual")
     plt.xlabel("Threshold")
     plt.ylabel("Basis Size")
-    plt.title("Batched Variance, Basis Size vs Threshold")
+    plt.title("Batched, Basis Size vs Threshold")
     plt.legend()
-    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}_BASIS_SIZE.svg")
     plt.clf()
 
     plt.semilogx(VARIANCE_THRESHOLDS, var_iterations, label="Variance")
+    plt.semilogx(RESIDUAL_THRESHOLDS, res_iterations, label="Residual")
     plt.xlabel("Threshold")
     plt.ylabel("Iterations")
-    plt.title("Batched Variance, Iterations vs Threshold")
+    plt.title("Batched, Iterations vs Threshold")
     plt.legend()
-    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}_ITERATIONS.svg")
     plt.clf()
 
     plt.semilogx(VARIANCE_THRESHOLDS, var_efficiencies, label="Variance")
+    plt.semilogx(RESIDUAL_THRESHOLDS, res_efficiencies, label="Residual")
     plt.xlabel("Threshold")
     plt.ylabel("Efficiency")
-    plt.title("Batched Variance, Efficiency vs Threshold")
+    plt.title("Batched, Efficiency vs Threshold")
     plt.legend()
-    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}_EFFICIENCY.svg")
     plt.clf()
 
     plt.semilogx(VARIANCE_THRESHOLDS, var_times, label="Variance")
+    plt.semilogx(RESIDUAL_THRESHOLDS, res_times, label="Residual")
     plt.xlabel("Threshold")
     plt.ylabel("Time")
-    plt.title("Batched Variance, Time vs Threshold")
+    plt.title("Batched, Time vs Threshold")
     plt.legend()
-    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
+    plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}_TIME.svg")
     plt.clf()
-
 
 if __name__ == "__main__":
     main()

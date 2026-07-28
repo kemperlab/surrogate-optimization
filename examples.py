@@ -23,7 +23,7 @@ def training_grid_generator(
                 + param_range[0]
             )
 
-    with concurrent.futures.ProcessPoolExecutor(
+    with concurrent.futures.ThreadPoolExecutor(
         max_workers=processes
     ) as pool:
         chuck_size = int(np.ceil(len(points) / processes))
@@ -61,7 +61,10 @@ class EnergyConvergenceCostFunction(
             self.ec_energies.append([])
             for training_point in self.training_grid:
                 Hr = self.model.build_Hr(training_point)
-                evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
+                evals, evecs = sp.linalg.eigh(
+                    Hr, self.model.overlap,
+                    overwrite_a=True
+                )
 
                 self.ec_energies[-1].append(evals[0])
 
@@ -73,7 +76,10 @@ class EnergyConvergenceCostFunction(
         training_point: dict
     ):
         Hr = self.model.build_Hr(training_point)
-        evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
+        evals, evecs = sp.linalg.eigh(
+            Hr, self.model.overlap,
+            overwrite_a=True
+        )
 
         return evals[0]
 
@@ -98,7 +104,10 @@ class EnergyConvergenceCostFunction(
         self.ec_energies.append([])
         for training_point in self.training_grid:
             Hr = self.model.build_Hr(training_point)
-            evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
+            evals, evecs = sp.linalg.eigh(
+                Hr, self.model.overlap,
+                overwrite_a=True
+            )
             self.ec_energies[-1].append(evals[0])
 
         for i in range(len(self.ec_energies[-1])):
@@ -205,7 +214,10 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         training_point: dict
     ):
         Hr = self.model.build_Hr(training_point)
-        evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
+        evals, evecs = sp.linalg.eigh(
+            Hr, self.model.overlap,
+            overwrite_a=True
+        )
 
         # find degeneracy of the ground state
         degeneracy = 0
@@ -319,19 +331,7 @@ class ResidualCostFunction(CostFunctionInterface[float]):
         self,
         training_point: dict
     ) -> T:
-        H_full = self.model.build_H_full(training_point)
-        v0 = np.ones(H_full.shape[0]) / np.sqrt(H_full.shape[0])
-
-        if self.model.sparse:
-            evals, evecs = sps.linalg.eigsh(
-                H_full.real,
-                k=min(int(self.model.size * self.model.sparse_proportion)+1, 4),
-                v0=v0,
-                which='SA'
-            )
-        else:
-            evals, evecs = sp.linalg.eigh(H_full)
-
+        evals, evecs = self.model.truth_solver(training_point)
         gs = evecs[:, 0]
 
         vec = (
@@ -502,7 +502,10 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         training_point: dict
     ):
         Hr = self.model.build_Hr(training_point)
-        evals, evecs = sp.linalg.eigh(Hr, self.model.overlap)
+        evals, evecs = sp.linalg.eigh(
+            Hr, self.model.overlap,
+            overwrite_a=True
+        )
 
         # find degeneracy of the ground state
         degeneracy = 0
@@ -530,7 +533,8 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
             evec = evecs[:, k]
             var += (
                 evec.conj() @ H2r @ evec
-                - (evals[k] * evals[k]) * (evec.conj() @ self.model.overlap @ evec)
+                - (evals[k] * evals[k])
+                * (evec.conj() @ self.model.overlap @ evec)
             )
 
         return float(var.real)

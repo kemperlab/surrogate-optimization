@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy as sp
 import sys
+import time
 
 from examples import (
     ResidualCostFunction,
@@ -27,7 +28,7 @@ def main():
     TEST_NAME = "MOCK_TEST1"
     SAVE_FOLDER = TEST_NAME
     PROCESSES = 4
-    NUM_TESTS = 200
+    NUM_TESTS = 8
 
     SEED = 4
 
@@ -101,7 +102,7 @@ def main():
                 + param_range[0]
             )
 
-    with concurrent.futures.ProcessPoolExecutor(
+    with concurrent.futures.ThreadPoolExecutor(
         max_workers=PROCESSES
     ) as pool:
         batch_size = int(np.ceil(len(points) / PROCESSES))
@@ -114,19 +115,15 @@ def main():
 
     model.log("Training grid generated")
 
-    nve_cf = NaiveMethod(
-        model,
-        PARAMETER_SPACE,
-        TOTAL_SOBOL_POINTS,
-        POINTS_PER_ITERATION
-    )
-
+    # Same logic as Herbst et al. 2022
     var_training_cf = VarianceCostFunction(
         model,
         training_grid,
         VARIANCE_THRESHOLD
     )
 
+    # Variance based, capping the number of points for variance
+    # calculation and basis addition to POINTS_PER_ITERATION
     var_cf = VarianceCostFunction2(
         model,
         VARIANCE_THRESHOLD,
@@ -137,6 +134,8 @@ def main():
         seed = SEED
     )
 
+    # Residual based, capping the number of points for residual 
+    # calculation to POINTS_PER_ITERATION
     res_cf = ResidualCostFunction(
         model,
         RESIDUAL_THRESHOLD,
@@ -147,6 +146,9 @@ def main():
         seed = SEED
     )
 
+    # Variance based, search for points in the Sobol sequence,
+    # accept/reject points one-at-a-time based on variance. 
+    # Terminates upon first rejection
     sob_cf = VarianceCostFunction2(
         model,
         VARIANCE_THRESHOLD,
@@ -157,83 +159,115 @@ def main():
         seed = SEED
     )
 
-    model.optimize(nve_cf, INIT_THETA, "NaiveResults")
-
-    nve_basis_size = model.opt_basis.shape[1]
-    nve_iterations = len(model.iteration_costs)
-    nve_basis_growth = model.basis_growth
-    nve_errors = tester.test_model()
-
-    model.log(f"Naive Basis Size {nve_basis_size}")
-    model.log(f"Naive Iterations {nve_iterations}")
-    model.log(f"Naive Max Error {max(nve_errors)}")
-
-    model.reset()
-
     model.optimize(var_cf, INIT_THETA, "VarianceResults")
+    model.log(f"Variance Optimization Time: {model.optimization_time} seconds")
 
     var_basis_size = model.opt_basis.shape[1]
-    var_iterations = len(model.iteration_costs)
+    var_iterations = model.n_iterations
     var_basis_growth = model.basis_growth
     var_errors = tester.test_model()
+    var_n_full_diag = model.n_full_diag
+    var_efficiency = (
+        var_basis_size / var_n_full_diag if var_n_full_diag else float("nan")
+    )
 
     model.log(f"Variance Basis Size {var_basis_size}")
     model.log(f"Variance Iterations {var_iterations}")
     model.log(f"Variance Max Error {max(var_errors)}")
+    model.log(f"Variance Full Diagonalizations {var_n_full_diag}")
+    model.log(f"Variance Efficiency {var_efficiency}")
 
     model.reset()
 
+    time_start = time.time()
     model.optimize(res_cf, INIT_THETA, "ResidualResults")
+    res_cf_time = time.time() - time_start
+    model.log(f"Residual Optimization Time: {res_cf_time} seconds")
 
     res_basis_size = model.opt_basis.shape[1]
-    res_iterations = len(model.iteration_costs)
+    res_iterations = model.n_iterations
     res_basis_growth = model.basis_growth
     res_errors = tester.test_model()
+    res_n_full_diag = model.n_full_diag
+    res_efficiency = (
+        res_basis_size / res_n_full_diag if res_n_full_diag else float("nan")
+    )
 
     model.log(f"Residual Basis Size {res_basis_size}")
     model.log(f"Residual Iterations {res_iterations}")
     model.log(f"Residual Max Error {max(res_errors)}")
+    model.log(f"Residual Full Diagonalizations {res_n_full_diag}")
+    model.log(f"Residual Efficiency {res_efficiency}")
 
     model.reset()
 
+    time_start = time.time()
     model.optimize(sob_cf, INIT_THETA, "SobolResults")
+    sob_cf_time = time.time() - time_start
+    model.log(f"Sobol Optimization Time: {sob_cf_time} seconds")
 
     sob_basis_size = model.opt_basis.shape[1]
-    sob_iterations = len(model.iteration_costs)
+    sob_iterations = model.n_iterations
     sob_basis_growth = model.basis_growth
     sob_errors = tester.test_model()
+    sob_n_full_diag = model.n_full_diag
+    sob_efficiency = (
+        sob_basis_size / sob_n_full_diag if sob_n_full_diag else float("nan")
+    )
 
     model.log(f"Sobol Basis Size {sob_basis_size}")
     model.log(f"Sobol Iterations {sob_iterations}")
     model.log(f"Sobol Max Error {max(sob_errors)}")
+    model.log(f"Sobol Full Diagonalizations {sob_n_full_diag}")
+    model.log(f"Sobol Efficiency {sob_efficiency}")
 
     model.reset()
 
+    time_start = time.time()
     model.optimize(var_training_cf, INIT_THETA, "VarianceTResults")
+    var_training_cf_time = time.time() - time_start
+    model.log(f"Variance (Training Grid) Optimization Time: {var_training_cf_time} seconds")
 
     vart_basis_size = model.opt_basis.shape[1]
-    vart_iterations = len(model.iteration_costs)
+    vart_iterations = model.n_iterations
     vart_basis_growth = model.basis_growth
     vart_errors = tester.test_model()
+    vart_n_full_diag = model.n_full_diag
+    vart_efficiency = (
+        vart_basis_size / vart_n_full_diag if vart_n_full_diag else float("nan")
+    )
 
     model.log(f"Variance (Training Grid) Basis Size {vart_basis_size}")
     model.log(f"Variance (Training Grid) Iterations {vart_iterations}")
     model.log(f"Variance (Training Grid) Max Error {max(vart_errors)}")
+    model.log(f"Variance (Training Grid) Full Diagonalizations {vart_n_full_diag}")
+    model.log(f"Variance (Training Grid) Efficiency {vart_efficiency}")
 
     model.log("########## RESULTS ##########")
     model.log(f"Hilbert Space Size {model.size}")
     model.log(f"Variance (Training Grid) Basis Size {vart_basis_size}")
     model.log(f"Variance (Training Grid) Iterations {vart_iterations}")
     model.log(f"Variance (Training Grid) Max Error {max(vart_errors)}")
+    model.log(f"Variance (Training Grid) Efficiency {vart_efficiency}")
+    model.log(f"Variance (Training Grid) total time: {var_training_cf_time} seconds")
+    model.log("")
     model.log(f"Variance Basis Size {var_basis_size}")
     model.log(f"Variance Iterations {var_iterations}")
     model.log(f"Variance Max Error {max(var_errors)}")
+    model.log(f"Variance Efficiency {var_efficiency}")
+    model.log(f"Variance total time: {var_cf_time} seconds")
+    model.log("")
     model.log(f"Residual Basis Size {res_basis_size}")
     model.log(f"Residual Iterations {res_iterations}")
     model.log(f"Residual Max Error {max(res_errors)}")
+    model.log(f"Residual Efficiency {res_efficiency}")
+    model.log(f"Residual total time: {res_cf_time} seconds")
+    model.log("")
     model.log(f"Sobol Basis Size {sob_basis_size}")
     model.log(f"Sobol Iterations {sob_iterations}")
     model.log(f"Sobol Max Error {max(sob_errors)}")
+    model.log(f"Sobol Efficiency {sob_efficiency}")
+    model.log(f"Sobol total time: {sob_cf_time} seconds")
     
     plt.semilogy(var_errors, label="Variance")
     plt.semilogy(vart_errors, label="Variance (Training Grid)")
@@ -246,10 +280,10 @@ def main():
     plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_ERRORS_{TEST_START}.svg")
     plt.clf()
 
-    plt.plot(np.arange(var_iterations), var_basis_growth, label="Variance")
-    plt.plot(np.arange(vart_iterations), vart_basis_growth,
+    plt.plot(np.arange(len(var_basis_growth)), var_basis_growth, label="Variance")
+    plt.plot(np.arange(len(vart_basis_growth)), vart_basis_growth,
         label="Variance (Training Grid)")
-    plt.plot(np.arange(res_iterations), res_basis_growth, label="Residual")
+    plt.plot(np.arange(len(res_basis_growth)), res_basis_growth, label="Residual")
     plt.xlabel("Iteration #")
     plt.ylabel("States Added")
     plt.title("States Added Per Iteration for Each Cost Function")

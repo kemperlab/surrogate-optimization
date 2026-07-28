@@ -63,7 +63,7 @@ class Tester:
             for training_point in self.training_grid:
                 self.ground_states.append(get_full_ground_state(training_point, self.model))
         else:
-            with concurrent.futures.ProcessPoolExecutor(
+            with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.processes
             ) as pool:
                 batch_size = int(np.ceil(len(self.thetas) / self.processes))
@@ -89,7 +89,7 @@ class Tester:
     def test_model(self):
         self.model.log(f"Testing model on {self.num_tests} tests")
         batch_size = int(np.ceil(len(self.training_grid) / self.processes))
-        with concurrent.futures.ProcessPoolExecutor(
+        with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.processes
         ) as pool:
             errors = list(pool.map(

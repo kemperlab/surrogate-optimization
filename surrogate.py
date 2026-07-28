@@ -1,6 +1,7 @@
 import abc
 import concurrent.futures
 import copy
+import time
 import datetime
 import io
 import numpy as np
@@ -211,6 +212,7 @@ class SurrogateModel:
         self.compress_add = None
         self._preiteration_fresh = False
         self.outdir = self.save_folder
+        self.optimization_time = 0
 
     def build_terms(
         self
@@ -275,7 +277,7 @@ class SurrogateModel:
                     self.H_terms[pauli_string] = H_term
 
         else:
-            with concurrent.futures.ProcessPoolExecutor(
+            with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.processes
             ) as pool:
                 batch_size = int(np.ceil(len(needed_terms) / self.processes))
@@ -332,6 +334,7 @@ class SurrogateModel:
         cfi: CostFunctionInterface,
         init_theta: tuple
     ):
+        self.truth_solver_cache = {}
         self.log(f"Initializing optimization with parameter point {init_theta}")
         init_training_point = self.theta_to_training_point(init_theta)
 
@@ -345,18 +348,7 @@ class SurrogateModel:
         
         self.log("Diagonalizing H...")
 
-        H_full = self.build_H_full(init_training_point)
-        v0 = np.ones(H_full.shape[0]) / np.sqrt(H_full.shape[0])
-        if self.sparse:
-            evals, evecs = sps.linalg.eigsh(
-                H_full.real,
-                k=min(int(self.size * self.sparse_proportion) + 1, 4),
-                v0=v0,
-                which='SA'
-            )
-        else:
-            evals, evecs = sp.linalg.eigh(H_full)
-
+        evals, evecs = self.truth_solver(init_training_point)
         self.n_full_diag += 1
 
         init_vec = evecs[:, 0]
@@ -405,6 +397,7 @@ class SurrogateModel:
             filename_costs = f"{self.outdir}/iteration_costs"
             filename_full_diag = f"{self.outdir}/n_full_diag.npz"
             filename_iterations = f"{self.outdir}/n_iterations.npz"
+            filename_time = f"{self.outdir}/time.npz"
 
             if os.path.exists(filename_basis):
                 self.log("Loading previously created basis...")
@@ -428,9 +421,15 @@ class SurrogateModel:
                     self.n_iterations = int(
                         np.load(filename_iterations)["arr_0"]
                     )
+                if os.path.exists(filename_time):
+                    self.optimization_time = np.float64(
+                        np.load(filename_time)["arr_0"]
+                    )
                 self.set_optimal(outdir)
 
                 return self.opt_basis
+
+        time_start = time.time()
 
         self.iteration_costs = []
         self.basis_growth = []
@@ -450,6 +449,8 @@ class SurrogateModel:
             self.n_iterations += 1
             if self.optimize_step(cfi):
                 break
+
+        self.optimization_time = np.float64(time.time() - time_start)
 
         self.set_optimal(outdir)
 
@@ -488,7 +489,7 @@ class SurrogateModel:
         
         Hr = self.build_Hr(training_point)
 
-        evals, evecs = sp.linalg.eigh(Hr, self.opt_overlap)
+        evals, evecs = sp.linalg.eigh(Hr, self.opt_overlap, overwrite_a=True)
 
         return evals, evecs
 
@@ -531,6 +532,8 @@ class SurrogateModel:
         self,
         cfi: CostFunctionInterface
     ) -> bool:
+        self.truth_solver_cache = {}
+
         if(np.linalg.cond(self.overlap) > self.max_condition):
             self.log("Condition number is to large")
             return True
@@ -558,7 +561,7 @@ class SurrogateModel:
             for j, training_point in enumerate(training_points):
                 costs[j] = cfi.cost_function(training_point)
         else:
-            with concurrent.futures.ProcessPoolExecutor(
+            with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.processes
             ) as pool:
                 batch_size = int(np.ceil(len(training_points) / self.processes))
@@ -570,7 +573,8 @@ class SurrogateModel:
 
         if cfi.full_diag_per_point:
             self.n_full_diag += len(training_points)
-
+        self.log("Costs calculated")
+        self.log("Selecteding points...")
         training_point_idxs = cfi.cost_selector(training_points, costs)
         self.log(f"Adding {len(training_point_idxs)} point(s)")
         next_training_points = training_points[training_point_idxs]
@@ -622,18 +626,7 @@ class SurrogateModel:
         self,
         training_point,
     ):
-        H_full = self.build_H_full(training_point)
-        v0 = np.ones(H_full.shape[0]) / np.sqrt(H_full.shape[0])
-
-        if self.sparse:
-            evals, evecs = sps.linalg.eigsh(
-                H_full.real,
-                k=min(int(self.size * self.sparse_proportion)+1, 4),
-                v0=v0,
-                which='SA'
-            )
-        else:
-            evals, evecs = sp.linalg.eigh(H_full)
+        evals, evecs = self.truth_solver(training_point)
 
         # find degeneracy of the ground state
         eps = 1e-10 # for comparing floating points of GSE
@@ -676,14 +669,17 @@ class SurrogateModel:
                     )
 
                 self.log("Adding point...")
-                self.log(f"Training point: {self.training_point_params(training_point)}")
+                self.log(
+                    f"Training point: "
+                    + f"{self.training_point_params(training_point)}"
+                )
                 self.log(f"Cost: {cost}")
         else:
             batch_size = int(
                 np.ceil(len(next_training_points) / self.processes)
             )
 
-            with concurrent.futures.ProcessPoolExecutor(
+            with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.processes
             ) as pool:
                 vecs_list = list(pool.map(
@@ -705,7 +701,10 @@ class SurrogateModel:
                         )
 
                     self.log("Adding point...")
-                    self.log(f"Training point: {self.training_point_params(training_point)}")
+                    self.log(
+                        f"Training point: "
+                        + f"{self.training_point_params(training_point)}"
+                    )
                     self.log(f"Cost: {cost}")
 
         return basis_addition
@@ -761,7 +760,7 @@ class SurrogateModel:
                     self.Hr_terms[pauli_string] = Hr_term
 
         else:
-            with concurrent.futures.ProcessPoolExecutor(
+            with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.processes
             ) as pool:
                 batch_size = int(np.ceil(len(self.pauli_strings) / self.processes))
@@ -816,7 +815,7 @@ class SurrogateModel:
             self.name,
             self.N_spin
         ))
-        training_point.theta = theta
+        training_point.theta = tuple(theta)
 
         return training_point
 
@@ -856,6 +855,10 @@ class SurrogateModel:
             np.savez_compressed(
                 f"{self.outdir}/n_iterations.npz", self.n_iterations
             )
+            np.savez_compressed(
+                f"{self.outdir}/time.npz", self.optimization_time
+            )
+
 
     def get_H_term(
         self,
@@ -879,6 +882,32 @@ class SurrogateModel:
         pauli
     ):
         return self.basis.conj().T @ (self.get_H_term(pauli) @ self.basis)
+
+    def truth_solver(
+        self,
+        training_point
+    ):
+        if training_point.theta in self.truth_solver_cache.keys():
+            self.log("RETRIEVED")
+            return self.truth_solver_cache[training_point.theta]
+        else:
+            self.log("NOT RETRIEVED")
+
+        H_full = self.build_H_full(training_point)
+        if self.sparse:
+            v0 = np.ones(H_full.shape[0]) / np.sqrt(H_full.shape[0])
+            evals, evecs = sps.linalg.eigsh(
+                H_full.real,
+                k=min(int(self.size * self.sparse_proportion) + 1, 4),
+                v0=v0,
+                which='SA'
+            )
+        else:
+            evals, evecs = sp.linalg.eigh(H_full, overwrite_a=True)
+
+        self.truth_solver_cache[training_point.theta] = (evals, evecs)
+
+        return evals, evecs
 
     def log(
         self,
