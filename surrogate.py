@@ -888,10 +888,7 @@ class SurrogateModel:
         training_point
     ):
         if training_point.theta in self.truth_solver_cache.keys():
-            self.log("RETRIEVED")
             return self.truth_solver_cache[training_point.theta]
-        else:
-            self.log("NOT RETRIEVED")
 
         H_full = self.build_H_full(training_point)
         if self.sparse:
