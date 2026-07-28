@@ -129,6 +129,11 @@ def main():
         var_times.append(var_cf_time)
 
         model.log(f"Variance Optimization Time: {var_cf_time} seconds")
+        model.log(f"Variance Basis Size {var_basis_sizes[-1]}")
+        model.log(f"Variance Iterations {var_iterations[-1]}")
+        model.log(f"Variance Max Error {var_max_errors[-1]}")
+        model.log(f"Variance Full Diagonalizations {var_n_full_diag}")
+        model.log(f"Variance Efficiency {var_efficiencies[-1]}")
 
         model.reset()
 
@@ -170,6 +175,11 @@ def main():
         res_times.append(res_cf_time)
 
         model.log(f"Residual Optimization Time: {res_cf_time} seconds")
+        model.log(f"Residual Basis Size {res_basis_sizes[-1]}")
+        model.log(f"Residual Iterations {res_iterations[-1]}")
+        model.log(f"Residual Max Error {res_max_errors[-1]}")
+        model.log(f"Residual Full Diagonalizations {res_n_full_diag}")
+        model.log(f"Residual Efficiency {res_efficiencies[-1]}")
 
         model.reset()
 

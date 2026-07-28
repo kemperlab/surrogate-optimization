@@ -111,15 +111,13 @@ def main():
             seed = SEED
         )
 
-        time_start = time.time()
         model.optimize(
             var_cf,
             INIT_THETA,
             f"Batched_VarianceResults_T{order}_S{SEED}"
         )
-        var_cf_time = time.time() - time_start
-        model.log(f"Variance Optimization Time: {var_cf_time} seconds")
 
+        var_cf_time = model.optimization_time
         var_basis_sizes.append(model.opt_basis.shape[1])
         var_iterations.append(model.n_iterations)
         var_max_errors.append(max(tester.test_model()))
@@ -129,6 +127,13 @@ def main():
             if var_n_full_diag else float("nan")
         )
         var_times.append(var_cf_time)
+
+        model.log(f"Variance Optimization Time: {var_cf_time} seconds")
+        model.log(f"Variance Basis Size {var_basis_sizes[-1]}")
+        model.log(f"Variance Iterations {var_iterations[-1]}")
+        model.log(f"Variance Max Error {var_max_errors[-1]}")
+        model.log(f"Variance Full Diagonalizations {var_n_full_diag}")
+        model.log(f"Variance Efficiency {var_efficiencies[-1]}")
 
         model.reset()
 
@@ -152,15 +157,13 @@ def main():
             seed = SEED
         )
 
-        time_start = time.time()
         model.optimize(
             res_cf,
             INIT_THETA,
             f"Batched_ResidualResults_T{order}_S{SEED}"
         )
-        res_cf_time = time.time() - time_start
-        model.log(f"Residual Optimization Time: {res_cf_time} seconds")
 
+        res_cf_time = model.optimization_time
         res_basis_sizes.append(model.opt_basis.shape[1])
         res_iterations.append(model.n_iterations)
         res_max_errors.append(max(tester.test_model()))
@@ -170,6 +173,13 @@ def main():
             if res_n_full_diag else float("nan")
         )
         res_times.append(res_cf_time)
+
+        model.log(f"Residual Optimization Time: {res_cf_time} seconds")
+        model.log(f"Residual Basis Size {res_basis_sizes[-1]}")
+        model.log(f"Residual Iterations {res_iterations[-1]}")
+        model.log(f"Residual Max Error {res_max_errors[-1]}")
+        model.log(f"Residual Full Diagonalizations {res_n_full_diag}")
+        model.log(f"Residual Efficiency {res_efficiencies[-1]}")
 
         model.reset()
 
