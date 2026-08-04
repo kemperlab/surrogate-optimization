@@ -31,21 +31,42 @@ def main():
 
     SEED = 1
 
-    MODEL_NAME = "AIM"
+    #MODEL_NAMES = ["AIM", "disordered_fermi_hubbard"]
+    MODEL_NAMES = ["AIM"]
     MODEL_N = 8
-    SELECTED_PARAMETERS = (
-        "U",
-        "vb1", "vb2", "vb3", "vb4",
-        "eb2", "eb3", "eb4"
-    )
-    PARAMETER_SPACE = (
-        (0.01, 5.0),
-        (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0),
-        (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0)
-    )
-    INIT_THETA = tuple(
-        [PARAMETER_SPACE[i][0] for i in range(len(PARAMETER_SPACE))]
-    )
+    SELECTED_PARAMETERS = {
+        "AIM": (
+            "U",
+            "vb1", "vb2", "vb3", "vb4",
+            "eb2", "eb3", "eb4"
+        ),
+        "disordered_fermi_hubbard": (
+            "xi0", "xi1", "xi2", "xi3",
+            "xi4", "xi5", "xi6", "xi7"
+        )
+    }
+    PARAMETER_SPACE = {
+        "AIM": (
+            (0.01, 5.0),
+            (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0),
+            (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0)
+        ),
+
+        "disordered_fermi_hubbard": (
+            (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0),
+            (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0), (-5.0, 5.0)
+        )
+    }
+    INIT_THETA = {
+        "AIM": tuple(
+            [PARAMETER_SPACE["AIM"][i][0]
+            for i in range(len(PARAMETER_SPACE["AIM"]))]
+        ),
+        "disorderd_fermi_hubbard": tuple(
+            [PARAMETER_SPACE["disordered_fermi_hubbard"][i][0]
+            for i in range(len(PARAMETER_SPACE["disordered_fermi_hubbard"]))]
+        )
+    }
     PARTICLE_SELECTION = (MODEL_N // 2, MODEL_N // 2)
     SPARSE = True
 
@@ -67,163 +88,337 @@ def main():
     ]
     
     #### RUN ####
-    model = SurrogateModel(
-        name = MODEL_NAME,
-        selected_params = SELECTED_PARAMETERS,
-        N = MODEL_N,
-        particle_selection = PARTICLE_SELECTION,
-        sparse = SPARSE,
-        processes = PROCESSES,
-        save_folder = SAVE_FOLDER
-    )
+    b_var_basis_sizes = {}
+    b_var_iterations = {}
+    b_var_max_errors = {}
+    b_var_efficiencies = {}
+    b_var_times = {}
 
-    model.build_terms()
+    g_var_basis_sizes = {}
+    g_var_iterations = {}
+    g_var_max_errors = {}
+    g_var_efficiencies = {}
+    g_var_times = {}
 
-    model.log("Generating test points...")
+    b_res_basis_sizes = {}
+    b_res_iterations = {}
+    b_res_max_errors = {}
+    b_res_efficiencies = {}
+    b_res_times = {}
 
-    tester = Tester(
-        model,
-        PARAMETER_SPACE,
-        processes = PROCESSES,
-        num_tests = NUM_TESTS,
-        seed = 0 # Testing seed should ALWAYS be zero -- for consistency
-    )
+    for MODEL_NAME in MODEL_NAMES:
+        b_var_basis_sizes[MODEL_NAME] = []
+        b_var_iterations[MODEL_NAME] = []
+        b_var_max_errors[MODEL_NAME] = []
+        b_var_efficiencies[MODEL_NAME] = []
+        b_var_times[MODEL_NAME] = []
 
-    model.log("Test points generated")
+        g_var_basis_sizes[MODEL_NAME] = []
+        g_var_iterations[MODEL_NAME] = []
+        g_var_max_errors[MODEL_NAME] = []
+        g_var_efficiencies[MODEL_NAME] = []
+        g_var_times[MODEL_NAME] = []
 
-    var_basis_sizes = []
-    var_iterations = []
-    var_max_errors = []
-    var_efficiencies = []
-    var_times = []
+        model = SurrogateModel(
+            name = MODEL_NAME,
+            selected_params = SELECTED_PARAMETERS[MODEL_NAME],
+            N = MODEL_N,
+            particle_selection = PARTICLE_SELECTION,
+            sparse = SPARSE,
+            processes = PROCESSES,
+            save_folder = SAVE_FOLDER,
+        )
 
-    for VARIANCE_THRESHOLD in VARIANCE_THRESHOLDS:
-        order = int(-np.log10(VARIANCE_THRESHOLD))
-        model.log(f"OPTIMIZING BATCHED VARIANCE WITH ORDER {order}")
+        model.build_terms()
 
-        var_cf = VarianceCostFunction2(
+        model.log("Generating test points...")
+
+        tester = Tester(
             model,
-            VARIANCE_THRESHOLD,
-            INIT_THETA,
-            PARAMETER_SPACE,
-            GRID_SIZE,
-            POINTS_PER_ITERATION,
-            seed = SEED
+            PARAMETER_SPACE[MODEL_NAME],
+            processes = PROCESSES,
+            num_tests = NUM_TESTS,
+            seed = 0 # Testing seed should ALWAYS be zero -- for consistency
         )
 
-        model.optimize(
-            var_cf,
-            INIT_THETA,
-            f"Batched_VarianceResults_T{order}_S{SEED}"
+        model.log("Test points generated")
+
+        for VARIANCE_THRESHOLD in VARIANCE_THRESHOLDS:
+            order = int(-np.log10(VARIANCE_THRESHOLD))
+            model.log(
+                f"OPTIMIZING {MODEL_NAME} WITH BATCHED VARIANCE WITH ORDER "
+                + f"{order}"
+            )
+
+            b_var_cf = VarianceCostFunction2(
+                model,
+                VARIANCE_THRESHOLD,
+                PARAMETER_SPACE[MODEL_NAME],
+                GRID_SIZE,
+                POINTS_PER_ITERATION,
+                seed = SEED
+            )
+
+            model.optimize(
+                b_var_cf,
+                INIT_THETA[MODEL_NAME],
+                f"Batched_VarianceResults_T{order}_S{SEED}"
+            )
+
+            b_var_basis_sizes[MODEL_NAME].append(model.opt_basis.shape[1])
+            b_var_iterations[MODEL_NAME].append(model.n_iterations)
+            b_var_max_errors[MODEL_NAME].append(max(tester.test_model()))
+            b_var_n_full_diag = model.n_full_diag
+            b_var_efficiencies[MODEL_NAME].append(
+                b_var_basis_sizes[MODEL_NAME][-1] / b_var_n_full_diag
+                if b_var_n_full_diag else float("nan")
+            )
+            b_var_times[MODEL_NAME].append(model.optimization_time)
+
+            model.log(
+                f"Batched Variance Optimization Time: "
+                + f"{b_var_times[MODEL_NAME][-1]} seconds"
+            )
+            model.log(
+                f"Batched Variance Basis Size "
+                + f"{b_var_basis_sizes[MODEL_NAME][-1]}"
+            )
+            model.log(
+                f"Batched Variance Iterations "
+                + f"{b_var_iterations[MODEL_NAME][-1]}"
+            )
+            model.log(
+                f"Batched Variance Max Error {b_var_max_errors[MODEL_NAME][-1]}"
+            )
+            model.log(
+                f"Batched Variance Full Diagonalizations {b_var_n_full_diag}"
+            )
+            model.log(
+                f"Batched Variance Efficiency "
+                + f"{b_var_efficiencies[MODEL_NAME][-1]}"
+            )
+
+            model.reset()
+
+            model.log(
+                f"OPTIMIZING {MODEL_NAME} WITH GLOBAL VARIANCE WITH ORDER "
+                + f"{order}"
+            )
+            model.log(f"Building training grid...")
+
+            training_grid = training_grid_generator(
+                PARAMETER_SPACE[MODEL_NAME],
+                GRID_SIZE,
+                model,
+                PROCESSES,
+                seed = SEED
+            )
+
+            model.log(f"Training grid build")
+
+            g_var_cf = VarianceCostFunction(
+                model,
+                training_grid,
+                VARIANCE_THRESHOLD
+            )
+
+            model.optimize(
+                g_var_cf,
+                INIT_THETA[MODEL_NAME],
+                f"Global_VarianceResults_T{order}_S{SEED}"
+            )
+
+            g_var_basis_sizes[MODEL_NAME].append(model.opt_basis.shape[1])
+            g_var_iterations[MODEL_NAME].append(model.n_iterations)
+            g_var_max_errors[MODEL_NAME].append(max(tester.test_model()))
+            g_var_n_full_diag = model.n_full_diag
+            g_var_efficiencies[MODEL_NAME].append(
+                g_var_basis_sizes[MODEL_NAME][-1] / g_var_n_full_diag
+                if g_var_n_full_diag else float("nan")
+            )
+            g_var_times[MODEL_NAME].append(model.optimization_time)
+
+            model.log(
+                f"Batched Variance Optimization Time: "
+                + f"{g_var_times[MODEL_NAME][-1]} seconds"
+            )
+            model.log(
+                f"Batched Variance Basis Size "
+                + f"{g_var_basis_sizes[MODEL_NAME][-1]}"
+            )
+            model.log(
+                f"Batched Variance Iterations "
+                + f"{g_var_iterations[MODEL_NAME][-1]}"
+            )
+            model.log(
+                f"Batched Variance Max Error {g_var_max_errors[MODEL_NAME][-1]}"
+            )
+            model.log(
+                f"Batched Variance Full Diagonalizations {g_var_n_full_diag}"
+            )
+            model.log(
+                f"Batched Variance Efficiency "
+                + f"{g_var_efficiencies[MODEL_NAME][-1]}"
+            )
+
+            model.reset()
+
+        b_res_basis_sizes[MODEL_NAME] = []
+        b_res_iterations[MODEL_NAME] = []
+        b_res_max_errors[MODEL_NAME] = []
+        b_res_efficiencies[MODEL_NAME] = []
+        b_res_times[MODEL_NAME] = []
+
+        for RESIDUAL_THRESHOLD in RESIDUAL_THRESHOLDS:
+            order = int(-np.log10(RESIDUAL_THRESHOLD))
+            model.log(f"OPTIMIZING BATCHED RESIDUAL WITH ORDER {order}")
+
+            b_res_cf = ResidualCostFunction(
+                model,
+                RESIDUAL_THRESHOLD,
+                PARAMETER_SPACE[MODEL_NAME],
+                GRID_SIZE,
+                POINTS_PER_ITERATION,
+                seed = SEED
+            )
+
+            model.optimize(
+                b_res_cf,
+                INIT_THETA[MODEL_NAME],
+                f"Batched_ResidualResults_T{order}_S{SEED}"
+            )
+
+            b_res_basis_sizes[MODEL_NAME].append(model.opt_basis.shape[1])
+            b_res_iterations[MODEL_NAME].append(model.n_iterations)
+            b_res_max_errors[MODEL_NAME].append(max(tester.test_model()))
+            b_res_n_full_diag = model.n_full_diag
+            b_res_efficiencies[MODEL_NAME].append(
+                res_basis_sizes[MODEL_NAME][-1] / res_n_full_diag
+                if res_n_full_diag else float("nan")
+            )
+            b_res_times[MODEL_NAME].append(model.optimization_time)
+
+            model.log(
+                f"Batched Residual Optimization Time: "
+                + f"{g_res_times[MODEL_NAME][-1]} seconds"
+            )
+            model.log(
+                f"Batched Residual Basis Size "
+                + f"{g_res_basis_sizes[MODEL_NAME][-1]}"
+            )
+            model.log(
+                f"Batched Residual Iterations "
+                + f"{g_res_iterations[MODEL_NAME][-1]}"
+            )
+            model.log(
+                f"Batched Residual Max Error {g_res_max_errors[MODEL_NAME][-1]}"
+            )
+            model.log(
+                f"Batched Residual Full Diagonalizations {g_res_n_full_diag}"
+            )
+            model.log(
+                f"Batched Residual Efficiency "
+                + f"{g_res_efficiencies[MODEL_NAME][-1]}"
+            )
+
+            model.reset()
+
+    for MODEL_NAME in MODEL_NAMES:
+        plt.loglog(
+            VARIANCE_THRESHOLDS, b_var_max_errors[MODEL_NAME],
+            label="Batched Variance"
         )
-
-        var_cf_time = model.optimization_time
-        var_basis_sizes.append(model.opt_basis.shape[1])
-        var_iterations.append(model.n_iterations)
-        var_max_errors.append(max(tester.test_model()))
-        var_n_full_diag = model.n_full_diag
-        var_efficiencies.append(
-            var_basis_sizes[-1] / var_n_full_diag
-            if var_n_full_diag else float("nan")
+        plt.loglog(
+            VARIANCE_THRESHOLDS, g_var_max_errors[MODEL_NAME],
+            label="Global Variance"
         )
-        var_times.append(var_cf_time)
-
-        model.log(f"Variance Optimization Time: {var_cf_time} seconds")
-        model.log(f"Variance Basis Size {var_basis_sizes[-1]}")
-        model.log(f"Variance Iterations {var_iterations[-1]}")
-        model.log(f"Variance Max Error {var_max_errors[-1]}")
-        model.log(f"Variance Full Diagonalizations {var_n_full_diag}")
-        model.log(f"Variance Efficiency {var_efficiencies[-1]}")
-
-        model.reset()
-
-    res_basis_sizes = []
-    res_iterations = []
-    res_max_errors = []
-    res_efficiencies = []
-    res_times = []
-
-    for RESIDUAL_THRESHOLD in RESIDUAL_THRESHOLDS:
-        order = int(-np.log10(RESIDUAL_THRESHOLD))
-        model.log(f"OPTIMIZING BATCHED RESIDUAL WITH ORDER {order}")
-
-        res_cf = ResidualCostFunction(
-            model,
-            RESIDUAL_THRESHOLD,
-            INIT_THETA,
-            PARAMETER_SPACE,
-            GRID_SIZE,
-            POINTS_PER_ITERATION,
-            seed = SEED
+        plt.loglog(
+            RESIDUAL_THRESHOLDS, b_res_max_errors[MODEL_NAME],
+            label="Batched Residual"
         )
-
-        model.optimize(
-            res_cf,
-            INIT_THETA,
-            f"Batched_ResidualResults_T{order}_S{SEED}"
-        )
-
-        res_cf_time = model.optimization_time
-        res_basis_sizes.append(model.opt_basis.shape[1])
-        res_iterations.append(model.n_iterations)
-        res_max_errors.append(max(tester.test_model()))
-        res_n_full_diag = model.n_full_diag
-        res_efficiencies.append(
-            res_basis_sizes[-1] / res_n_full_diag
-            if res_n_full_diag else float("nan")
-        )
-        res_times.append(res_cf_time)
-
-        model.log(f"Residual Optimization Time: {res_cf_time} seconds")
-        model.log(f"Residual Basis Size {res_basis_sizes[-1]}")
-        model.log(f"Residual Iterations {res_iterations[-1]}")
-        model.log(f"Residual Max Error {res_max_errors[-1]}")
-        model.log(f"Residual Full Diagonalizations {res_n_full_diag}")
-        model.log(f"Residual Efficiency {res_efficiencies[-1]}")
-
-        model.reset()
-
-    plt.loglog(VARIANCE_THRESHOLDS, var_max_errors, label="Variance")
-    plt.loglog(RESIDUAL_THRESHOLDS, res_max_errors, label="Residual")
     plt.xlabel("Threshold")
     plt.ylabel("Max Error")
-    plt.title("Batched, Max Error vs Threshold")
+    plt.title("Max Error vs Threshold")
     plt.legend()
     plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}_ERROR.svg")
     plt.clf()
 
-    plt.semilogx(VARIANCE_THRESHOLDS, var_basis_sizes, label="Variance")
-    plt.semilogx(RESIDUAL_THRESHOLDS, res_basis_sizes, label="Residual")
+    for MODEL_NAME in MODEL_NAMES:
+        plt.semilogx(
+            VARIANCE_THRESHOLDS, b_var_basis_sizes[MODEL_NAME],
+            label="Batched Variance"
+        )
+        plt.semilogx(
+            VARIANCE_THRESHOLDS, g_var_basis_sizes[MODEL_NAME],
+            label="Global Variance"
+        )
+        plt.semilogx(
+            RESIDUAL_THRESHOLDS, b_res_basis_sizes[MODEL_NAME],
+            label="Batched Residual"
+        )
     plt.xlabel("Threshold")
     plt.ylabel("Basis Size")
-    plt.title("Batched, Basis Size vs Threshold")
+    plt.title("Basis Size vs Threshold")
     plt.legend()
     plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}_BASIS_SIZE.svg")
     plt.clf()
 
-    plt.semilogx(VARIANCE_THRESHOLDS, var_iterations, label="Variance")
-    plt.semilogx(RESIDUAL_THRESHOLDS, res_iterations, label="Residual")
+    for MODEL_NAME in MODEL_NAMES:
+        plt.semilogx(
+            VARIANCE_THRESHOLDS, b_var_iterations[MODEL_NAME],
+            label="Batched Variance"
+        )
+        plt.semilogx(
+            VARIANCE_THRESHOLDS, g_var_iterations[MODEL_NAME],
+            label="Global Variance"
+        )
+        plt.semilogx(
+            RESIDUAL_THRESHOLDS, b_res_iterations[MODEL_NAME],
+            label="Batched Residual"
+        )
     plt.xlabel("Threshold")
     plt.ylabel("Iterations")
-    plt.title("Batched, Iterations vs Threshold")
+    plt.title("Iterations vs Threshold")
     plt.legend()
     plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}_ITERATIONS.svg")
     plt.clf()
 
-    plt.semilogx(VARIANCE_THRESHOLDS, var_efficiencies, label="Variance")
-    plt.semilogx(RESIDUAL_THRESHOLDS, res_efficiencies, label="Residual")
+    for MODEL_NAME in MODEL_NAMES:
+        plt.semilogx(
+            VARIANCE_THRESHOLDS, b_var_efficiencies[MODEL_NAME],
+            label="Batched Variance"
+        )
+        plt.semilogx(
+            VARIANCE_THRESHOLDS, g_var_efficiencies[MODEL_NAME],
+            label="Global Variance"
+        )
+        plt.semilogx(
+            RESIDUAL_THRESHOLDS, b_res_efficiencies[MODEL_NAME],
+            label="Batched Residual"
+        )
     plt.xlabel("Threshold")
     plt.ylabel("Efficiency")
-    plt.title("Batched, Efficiency vs Threshold")
+    plt.title("Efficiency vs Threshold")
     plt.legend()
     plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}_EFFICIENCY.svg")
     plt.clf()
 
-    plt.semilogx(VARIANCE_THRESHOLDS, var_times, label="Variance")
-    plt.semilogx(RESIDUAL_THRESHOLDS, res_times, label="Residual")
+    for MODEL_NAME in MODEL_NAMES:
+        plt.semilogx(
+            VARIANCE_THRESHOLDS, b_var_times[MODEL_NAME],
+            label="Batched Variance"
+        )
+        plt.semilogx(
+            VARIANCE_THRESHOLDS, g_var_times[MODEL_NAME],
+            label="Global Variance"
+        )
+        plt.semilogx(
+            RESIDUAL_THRESHOLDS, b_res_times[MODEL_NAME],
+            label="Batched Residual"
+        )
     plt.xlabel("Threshold")
     plt.ylabel("Time")
-    plt.title("Batched, Time vs Threshold")
+    plt.title("Time vs Threshold")
     plt.legend()
     plt.savefig(f"{SAVE_FOLDER}/{TEST_NAME}_{TEST_START}_TIME.svg")
     plt.clf()

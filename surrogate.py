@@ -104,7 +104,7 @@ class SurrogateModel:
         keep_on_disk = False
     ):
         self.name = name
-        self.params = get_model_parameters(self.name)
+        self.params = get_model_parameters(self.name, N)
         self.selected_params = selected_params
         self.N_spin = N
         self.N = get_model_N(self.name, N)
@@ -185,7 +185,11 @@ class SurrogateModel:
                 + " to one"
             )
 
-        if self.name == "AIM" or self.name == "fermi_hubbard":
+        if (
+            self.name == "AIM"
+            or self.name == "fermi_hubbard"
+            or self.name == "disordered_fermi_hubbard"
+        ):
             self.basis_ordering = "udud"
         else:
             self.basis_ordering = "uudd"
@@ -522,9 +526,10 @@ class SurrogateModel:
         self,
         training_point: dict,
     ) -> np.ndarray:
-        Hr = np.zeros((self.basis.shape[1], self.basis.shape[1]), dtype=float)
-        for pauli in self.pauli_strings:
-            Hr += training_point[pauli] * self.get_Hr_term(pauli)
+        Hr = sum(
+            training_point[pauli] * self.get_Hr_term(pauli)
+            for pauli in training_point.keys()
+        )
 
         return Hr
 

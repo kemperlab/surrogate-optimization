@@ -10,10 +10,11 @@ def training_grid_generator(
     parameter_space,
     grid_size,
     model,
-    processes
+    processes,
+    seed=None
 ):
     sobol_gen = sp.stats.qmc.Sobol(len(parameter_space),
-        rng=np.random.default_rng(SEED))
+        rng=np.random.default_rng(seed))
     # round up to the nearest power of two
     power = int(np.ceil(np.log2(grid_size)))
     points = np.array(sobol_gen.random_base2(power))
@@ -128,12 +129,12 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         self,
         model,
         training_grid,
-        res2_threshold,
+        var_threshold,
         degeneracy_truncation = 5,
     ):
         self.model = model
         self.training_grid = training_grid
-        self.res2_threshold = res2_threshold
+        self.var_threshold = var_threshold
         self.degeneracy_truncation = degeneracy_truncation
         self.pauli2_strings = []
         self.pauli2_pairs = {}
@@ -240,13 +241,10 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         self,
         training_point2
     ):
-        H2r = np.zeros(
-            (self.model.basis.shape[1], self.model.basis.shape[1]),
-            dtype=float
+        H2r = sum(
+            training_point2[pauli2] * self.get_H2r_term(pauli2)
+            for pauli2 in training_point2.keys()
         )
-
-        for pauli2 in self.pauli2_strings:
-            H2r += training_point2[pauli2] * self.get_H2r_term(pauli2)
 
         return H2r
 
@@ -284,15 +282,16 @@ class VarianceCostFunction(CostFunctionInterface[float]):
             for pauli2, (h_i, h_j) in self.pauli2_pairs.items()
         }
         H2r = self.build_H2r(training_point2)
-        res2 = 0
+        var = 0
         for k in range(degeneracy):
             evec = evecs[:, k]
-            res2 += (
-                evec.conj() @ H2r @ evec
-                - (evals[k] * evals[k]) * (evec.conj() @ self.model.overlap @ evec)
+            var += (
+                evec.conj() @ (H2r @ evec)
+                - (evals[k] * evals[k])
+                * (evec.conj() @ (self.model.overlap @ evec))
             )
 
-        return float(res2.real)
+        return float(var.real)
 
     def cost_selector(
         self,
@@ -312,7 +311,7 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         self,
         iteration_costs: list[T]
     ) -> bool:
-        return iteration_costs[-1] < self.res2_threshold
+        return iteration_costs[-1] < self.var_threshold
 
 class ResidualCostFunction(CostFunctionInterface[float]):
     full_diag_per_point = True
@@ -321,12 +320,9 @@ class ResidualCostFunction(CostFunctionInterface[float]):
         self,
         model,
         res_threshold,
-        init_param_point,
         param_space,
         num_points,
         points_per_iter,
-        num_to_exclude = 2, # exclude itself and its nearest neighbor
-        wait_at_least = None,
         seed = None
     ):
         self.model = model
@@ -344,21 +340,12 @@ class ResidualCostFunction(CostFunctionInterface[float]):
                 )
         self.kd_tree = sp.spatial.KDTree(self.points)
         self.points_per_iter = points_per_iter
-        self.num_to_exclude = num_to_exclude
-        self.chosen = np.array([init_param_point])
         self.search_points = None
-        self.wait_at_least = int(self.model.size / 4 + 0.5)
  
     def preiteration(self):
         pass
 
     def gen_training_points(self):
-        """
-        _, bad_indices = self.kd_tree.query(self.chosen, k=self.num_to_exclude)
-        self.search_points = (
-            np.delete(self.points, bad_indices, axis = 0)[:self.points_per_iter]
-        )
-        """
         self.search_points = np.array(
             self.points[:self.points_per_iter]
         )
@@ -396,11 +383,6 @@ class ResidualCostFunction(CostFunctionInterface[float]):
             # only for first iteration
             return 0
         max_cost_idxs = np.where(costs > self.res_threshold)[0]
-        self.chosen = np.append(
-            self.chosen,
-            self.search_points[max_cost_idxs],
-            axis = 0
-        )
 
         return max_cost_idxs
 
@@ -420,12 +402,9 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         self,
         model,
         var_threshold,
-        init_param_point,
         param_space,
         num_points,
         points_per_iter,
-        num_to_exclude = 2, # exclude itself and its nearest neighbor
-        wait_at_least = None,
         degeneracy_truncation = 5,
         seed = None
     ):
@@ -456,10 +435,7 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
                 )
         self.kd_tree = sp.spatial.KDTree(self.points)
         self.points_per_iter = points_per_iter
-        self.num_to_exclude = num_to_exclude
-        self.chosen = np.array([init_param_point])
         self.search_points = None
-        self.wait_at_least = int(self.model.size / 4 + 0.5)
 
     def preiteration(self):
         # basis is fixed for the duration of this iteration's training-point
@@ -555,23 +531,14 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         self,
         training_point2
     ):
-        H2r = np.zeros(
-            (self.model.basis.shape[1], self.model.basis.shape[1]),
-            dtype=float
+        H2r = sum(
+            training_point2[pauli2] * self.get_H2r_term(pauli2)
+            for pauli2 in training_point2.keys()
         )
 
-        for pauli2 in self.pauli2_strings:
-            H2r += training_point2[pauli2] * self.get_H2r_term(pauli2)
-        
         return H2r
 
     def gen_training_points(self):
-        """
-        _, bad_indices = self.kd_tree.query(self.chosen, k=self.num_to_exclude)
-        self.search_points = (
-            np.delete(self.points, bad_indices, axis = 0)[:self.points_per_iter]
-        )
-        """
         self.search_points = np.array(
             self.points[:self.points_per_iter]
         )
@@ -619,9 +586,9 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         for k in range(degeneracy):
             evec = evecs[:, k]
             var += (
-                evec.conj() @ H2r @ evec
+                evec.conj() @ (H2r @ evec)
                 - (evals[k] * evals[k])
-                * (evec.conj() @ self.model.overlap @ evec)
+                * (evec.conj() @ (self.model.overlap @ evec))
             )
 
         return float(var.real)
@@ -635,11 +602,6 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
             # only for first iteration
             return 0
         max_cost_idxs = np.where(costs > self.var_threshold)[0]
-        self.chosen = np.append(
-            self.chosen,
-            self.search_points[max_cost_idxs],
-            axis = 0
-        )
 
         return max_cost_idxs
 
