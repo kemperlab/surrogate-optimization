@@ -515,10 +515,9 @@ class SurrogateModel:
             The matrix in the full Hilbert space
         """
 
-        H_full = sum(
-            training_point[pauli] * self.get_H_term(pauli)
-            for pauli in training_point.keys()
-        )
+        H_full = sp.sparse.csc_matrix((self.size, self.size))
+        for pauli in training_point.keys():
+            H_full += training_point[pauli] * self.get_H_term(pauli)
 
         return H_full
 
@@ -526,10 +525,9 @@ class SurrogateModel:
         self,
         training_point: dict,
     ) -> np.ndarray:
-        Hr = sum(
-            training_point[pauli] * self.get_Hr_term(pauli)
-            for pauli in training_point.keys()
-        )
+        Hr = np.zeros((self.basis.shape[1], self.basis.shape[1]))
+        for pauli in training_point.keys():
+            Hr += training_point[pauli] * self.get_Hr_term(pauli)
 
         return Hr
 
@@ -835,6 +833,7 @@ class SurrogateModel:
 
         self.opt_basis = self.basis
         self.opt_overlap = self.basis.conj().T @ self.basis
+        self.overlap = self.opt_overlap
         self.build_Hr_terms()
         self.opt_Hr_terms = self.Hr_terms
 

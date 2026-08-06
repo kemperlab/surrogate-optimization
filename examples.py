@@ -241,10 +241,10 @@ class VarianceCostFunction(CostFunctionInterface[float]):
         self,
         training_point2
     ):
-        H2r = sum(
-            training_point2[pauli2] * self.get_H2r_term(pauli2)
-            for pauli2 in training_point2.keys()
-        )
+        H2r = np.zeros((self.model.basis.shape[1], self.model.basis.shape[1]))
+
+        for pauli2 in training_point2.keys():
+            H2r += training_point2[pauli2] * self.get_H2r_term(pauli2)
 
         return H2r
 
@@ -531,10 +531,10 @@ class VarianceCostFunction2(CostFunctionInterface[float]):
         self,
         training_point2
     ):
-        H2r = sum(
-            training_point2[pauli2] * self.get_H2r_term(pauli2)
-            for pauli2 in training_point2.keys()
-        )
+        H2r = np.zeros((self.model.basis.shape[1], self.model.basis.shape[1]))
+
+        for pauli2 in training_point2.keys():
+            H2r += training_point2[pauli2] * self.get_H2r_term(pauli2)
 
         return H2r
 
